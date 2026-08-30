@@ -8,7 +8,7 @@
     },
     "id": "bogdoner.click-indicators",
     "name": "Click Indicators",
-    "version": "v6.12.0",
+    "version": "v7.4.0",
     "developers": [
         "Bogdoner"
     ],
@@ -169,6 +169,14 @@
             ],
             "description": "Which edge the rhythm lane sits on. Middle lays it flat across the top of the screen instead, with notes running in sideways to a receptor at one end. Upside down lane swaps which end that is."
         },
+        "mid-lane-hit": {
+            "name": "Middle lane hit position",
+            "description": "Where the hit line sits along the screen when the lane is set to Middle, as a fraction of screen width in from the near edge. Higher moves your aim point towards the centre. Notes use whatever space is left, so raising this shortens the run-in.",
+            "type": "float",
+            "default": 0.38,
+            "min": 0.08,
+            "max": 0.5
+        },
         "lane-window": {
             "name": "Lane window (seconds)",
             "description": "How much time the ladder covers from top to hit line. Lower means faster, more precise notes.",
@@ -231,21 +239,21 @@
             "type": "bool",
             "default": true
         },
-        "perfect-window": {
-            "name": "Perfect window (frames)",
-            "description": "Within this many frames of the macro counts as perfect. At 240 tps, 2 frames is 8 ms.",
-            "type": "int",
-            "default": 2,
-            "min": 0,
-            "max": 20
-        },
-        "ok-window": {
-            "name": "OK window (frames)",
-            "description": "Outside perfect but inside this counts as OK. Beyond it is a miss.",
+        "perfect-ms": {
+            "name": "Perfect window (ms)",
+            "description": "Within this many milliseconds of the macro counts as perfect. In real time, so it means the same thing on a 60 tps macro and a 1200 tps one.",
             "type": "int",
             "default": 8,
             "min": 1,
-            "max": 60
+            "max": 100
+        },
+        "ok-ms": {
+            "name": "OK window (ms)",
+            "description": "Outside perfect but inside this counts as OK, shading from yellow to orange. Beyond it is a miss.",
+            "type": "int",
+            "default": 33,
+            "min": 2,
+            "max": 400
         }
     },
     "dependencies": {

@@ -25,6 +25,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cctype>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
@@ -125,6 +126,31 @@ static std::vector<MacroEntry> listMacros() {
     return out;
 }
 
+// lowercase, letters and digits only, so "Bloodbath", "bloodbath" and
+// "Bloodbath (2).slc" all reduce to the same thing
+static std::string squash(std::string const& s) {
+    std::string out;
+    out.reserve(s.size());
+    for (unsigned char c : s)
+        if (std::isalnum(c)) out += char(std::tolower(c));
+    return out;
+}
+
+// Does the level id appear in the filename as a number in its own right?
+// "123456789.slc" and "123456789 - attempt 4.slc" yes, "1234567890.slc" no.
+static bool filenameHasID(std::string const& stem, int id) {
+    if (id <= 0) return false;
+    const std::string want = std::to_string(id);
+    for (size_t i = 0; (i = stem.find(want, i)) != std::string::npos; ++i) {
+        const bool leftOk  = i == 0 || !std::isdigit((unsigned char)stem[i - 1]);
+        const size_t after = i + want.size();
+        const bool rightOk = after >= stem.size()
+                          || !std::isdigit((unsigned char)stem[after]);
+        if (leftOk && rightOk) return true;
+    }
+    return false;
+}
+
 static std::optional<gdr2::Replay> findMacro(GJGameLevel* level) {
     // an explicit pick from the pause menu beats any automatic match
     const auto forced = pickedMacro(level);
@@ -148,25 +174,67 @@ static std::optional<gdr2::Replay> findMacro(GJGameLevel* level) {
     const std::string wantName = level->m_levelName;
     log::info("level {} \"{}\" | scanning {}", wantID, wantName, macroDir().string());
 
+    // Match strength, best first. Silicate never writes the level id or name
+    // into its files, and plenty of gdr recordings leave them blank too, so a
+    // matcher that only trusts what is inside the file finds nothing for them.
+    // The filename is the other thing the user controls, so it counts.
+    enum { kNone = 0, kFileName, kFileID, kRepName, kRepID };
+
+    const std::string wantSquash = squash(wantName);
+
+    std::string bestFile;
+    std::optional<gdr2::Replay> best;
+    int bestRank = kNone;
+    std::vector<std::string> seen;
+
     std::error_code ec;
     for (auto const& e : std::filesystem::directory_iterator(macroDir(), ec)) {
         if (!e.is_regular_file()) continue;
         if (!fmts::knownExtension(e.path().extension().string())) continue;
         const auto fname = e.path().filename().string();
+        const auto stem  = e.path().stem().string();
 
         auto rep = fmts::parseAny(readFile(e.path()));
         if (!rep) { log::warn("  {} failed to parse", fname); continue; }
+        seen.push_back(fname);
 
-        const bool byID   = wantID > 0 && int(rep->levelID) == wantID;
-        const bool byStem = e.path().stem().string() == std::to_string(wantID);
-        const bool byName = wantID <= 0 && !rep->levelName.empty() && rep->levelName == wantName;
-        if (!(byID || byStem || byName)) continue;
+        int rank = kNone;
+        if (wantID > 0 && int(rep->levelID) == wantID)                 rank = kRepID;
+        else if (!rep->levelName.empty() && squash(rep->levelName) == wantSquash)
+                                                                       rank = kRepName;
+        else if (stem == std::to_string(wantID))                       rank = kFileID;
+        else if (filenameHasID(stem, wantID))                          rank = kFileID;
+        else if (!wantSquash.empty() && squash(stem) == wantSquash)    rank = kFileName;
 
-        log::info("macro: {} | {} inputs | {} tps | {:.2f}s | bot {}",
-                  fname, rep->inputs.size(), rep->framerate, rep->seconds(), rep->botName);
-        return rep;
+        if (rank <= bestRank) continue;
+        bestRank = rank;
+        bestFile = fname;
+        best = std::move(rep);
     }
-    log::info("no macro for this level");
+
+    if (best) {
+        static char const* why[] = { "", "filename matches the level name",
+                                     "filename carries the level id",
+                                     "macro stores this level name",
+                                     "macro stores this level id" };
+        log::info("macro: {} | {} inputs | {} tps | {:.2f}s | bot {} | {}",
+                  bestFile, best->inputs.size(), best->framerate,
+                  best->seconds(), best->botName, why[bestRank]);
+        return best;
+    }
+
+    // Nothing matched. Say what is actually in the folder, because the usual
+    // cause is a file that carries no level info and is not named after the
+    // level either, and there is no way to tell that from silence.
+    if (seen.empty()) {
+        log::info("no macros in {}", macroDir().string());
+    } else {
+        log::info("no macro matched this level. {} readable file(s) present. "
+                  "Rename one to \"{}\" plus its extension, or pick it from the "
+                  "pause menu:",
+                  seen.size(), wantID > 0 ? std::to_string(wantID) : wantName);
+        for (auto const& s : seen) log::info("    {}", s);
+    }
     return std::nullopt;
 }
 
@@ -185,8 +253,10 @@ struct Look {
     double offset;
     bool  showPlayer, showLane, laneLeft, showAccuracy, splitLane, edgeMarker;
     bool  holdTracks, pressBadge, playerSquare, circleNotes, flipLane, laneMiddle;
-    float badgeSize, laneWindow, laneScale, laneDepth;
-    int   perfectFrames, okFrames, maxNotes;
+    float badgeSize, laneWindow, laneScale, laneDepth, midHit;
+    // real time, not frames, so a window means the same on every macro
+    double perfectSec, okSec;
+    int   maxNotes;
 };
 
 static Look readSettings() {
@@ -206,6 +276,7 @@ static Look readSettings() {
     l.laneWindow    = float(Mod::get()->getSettingValue<double>("lane-window"));
     l.laneScale     = float(Mod::get()->getSettingValue<double>("lane-scale"));
     l.laneDepth     = float(Mod::get()->getSettingValue<double>("lane-depth"));
+    l.midHit        = std::clamp(float(Mod::get()->getSettingValue<double>("mid-lane-hit")), 0.08f, 0.5f);
     l.circleNotes   = Mod::get()->getSettingValue<std::string>("note-shape") == "Circle";
     l.flipLane      = Mod::get()->getSettingValue<bool>("lane-flip");
     l.laneMiddle    = Mod::get()->getSettingValue<std::string>("lane-side") == "Middle";
@@ -216,8 +287,12 @@ static Look readSettings() {
     l.playerSquare  = Mod::get()->getSettingValue<bool>("player-square");
     l.badgeSize     = float(Mod::get()->getSettingValue<double>("badge-size"));
     l.showAccuracy  = Mod::get()->getSettingValue<bool>("accuracy");
-    l.perfectFrames = int(Mod::get()->getSettingValue<int64_t>("perfect-window"));
-    l.okFrames      = int(Mod::get()->getSettingValue<int64_t>("ok-window"));
+    // Milliseconds, not frames. A frame means a different amount of time in
+    // every macro, so a frame based window was four times wider on a 60 tps
+    // recording than a 240 tps one and twenty times wider than a 1200 tps one.
+    // That is what made low fps macros look spread out and high fps squished.
+    l.perfectSec    = double(Mod::get()->getSettingValue<int64_t>("perfect-ms")) / 1000.0;
+    l.okSec         = double(Mod::get()->getSettingValue<int64_t>("ok-ms")) / 1000.0;
     l.maxNotes      = int(Mod::get()->getSettingValue<int64_t>("max-notes"));
     return l;
 }
@@ -229,6 +304,12 @@ static Look readSettings() {
 static CCDrawNode* makeNode() {
     auto n = CCDrawNode::create();
     n->setBlendFunc({ GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA });
+    // Indicators are not part of the level and must not be dimmed, tinted or
+    // faded by it. Refusing the cascade means a fade trigger, a dark section or
+    // a colour trigger on the layer we hang off cannot reach in and change the
+    // colours the settings asked for.
+    n->setCascadeOpacityEnabled(false);
+    n->setCascadeColorEnabled(false);
     return n;
 }
 
@@ -286,11 +367,11 @@ static void square(CCDrawNode* n, float cx, float cy, float half, float t, ccCol
 
 // green when perfect, then yellow sliding to orange across the ok window,
 // red once you are outside it. how far off you were, as a colour.
-static ccColor4F verdictColour(int off, int perfect, int ok) {
+static ccColor4F verdictColour(double off, double perfect, double ok) {
     if (off <= perfect) return { 0.28f, 1.00f, 0.42f, 1.f };
     if (off <= ok) {
         const float t = (ok > perfect)
-                      ? float(off - perfect) / float(ok - perfect) : 0.f;
+                      ? float((off - perfect) / (ok - perfect)) : 0.f;
         return { 1.00f, 0.90f - 0.42f * t, 0.18f - 0.12f * t, 1.f };
     }
     return { 1.00f, 0.26f, 0.30f, 1.f };
@@ -305,6 +386,67 @@ static ccColor3B toC3B(ccColor4F c) {
 static ccColor4F lighten(ccColor4F c, float k) {
     return { std::clamp(c.r * k, 0.f, 1.f), std::clamp(c.g * k, 0.f, 1.f),
              std::clamp(c.b * k, 0.f, 1.f), c.a };
+}
+
+// The level is measured as a speed profile: how fast the player is actually
+// moving in each slice of x. Speed at a position is a property of the level,
+// not of the attempt, so EVERY attempt contributes, including one that starts
+// at a start position deep into the level. That is the difference from a
+// time-indexed curve, which only a run from the beginning can record and which
+// therefore never learns the part of a level you are practising.
+//
+// Integrating it gives time-at-x, which is the one thing a start position
+// needs to know. Slices nobody has reached yet fall back to the speed portal
+// model, so this degrades to the old behaviour and improves from there.
+constexpr float  kBucket     = 120.f;   // units of x per slice
+constexpr size_t kMaxBuckets = 4096;    // covers x up to ~491k
+
+static std::string packProf(std::vector<uint16_t> const& p) {
+    std::string s;
+    s.reserve(p.size() * 4);
+    for (size_t i = 0; i < p.size(); ++i) {
+        if (i) s += ',';
+        s += std::to_string(p[i]);       // 0 means never measured
+    }
+    return s;
+}
+
+static std::vector<uint16_t> unpackProf(std::string const& s) {
+    std::vector<uint16_t> p;
+    size_t i = 0;
+    while (i < s.size()) {
+        size_t j = s.find(',', i);
+        if (j == std::string::npos) j = s.size();
+        long v = 0;
+        try { v = std::stol(s.substr(i, j - i)); }
+        catch (...) { return {}; }
+        if (v < 0 || v > 2000) return {};
+        p.push_back(uint16_t(v));
+        if (p.size() > kMaxBuckets) return {};
+        i = j + 1;
+    }
+    return p;
+}
+
+// Physics rates a GD install can plausibly be running. Stock 2.2 is 240; the
+// rest are what the common physics bypass options set. Measured rates get
+// snapped to one of these so a noisy reading cannot put the clock on a rate
+// that does not exist.
+constexpr double kTpsTable[] = {
+    60.0, 75.0, 120.0, 144.0, 180.0, 240.0, 360.0, 480.0,
+    600.0, 720.0, 960.0, 1200.0, 2400.0
+};
+
+// Nearest by ratio, not by difference, so 240 vs 360 is judged as fairly as
+// 1200 vs 2400. Returns 0 if nothing is close enough to trust.
+static double snapTps(double v) {
+    if (!(v > 1.0) || !std::isfinite(v)) return 0.0;
+    double best = 0.0, bestErr = 1e9;
+    for (double t : kTpsTable) {
+        const double e = std::abs(std::log(v / t));
+        if (e < bestErr) { bestErr = e; best = t; }
+    }
+    return bestErr < 0.08 ? best : 0.0;   // within ~8%, else refuse
 }
 
 static float snapSpeed(float v) {
@@ -353,6 +495,7 @@ class $modify(IndicatorLayer, PlayLayer) {
         double macroSeconds = 0.0;
 
         CCDrawNode*     world = nullptr;
+        bool            worldDetached = false;   // sibling of m_objectLayer
         CCDrawNode*     lane  = nullptr;
         CCLabelBMFont*  verdict = nullptr;
         CCLabelBMFont*  tally = nullptr;
@@ -373,16 +516,49 @@ class $modify(IndicatorLayer, PlayLayer) {
         float  speed = kSpeeds[1];
         float  lastX = 0.f;
         double lastSpeedTime = 0.0;
+        // measuring window for the opening speed, see learnStartSpeed
+        float  spawnX = -1e9f;
+        float  measX0 = -1.f;
+        double measT0 = 0.0;
 
         // Position drives the macro clock. No scaling: the walk is already in
         // macro seconds if the speed profile is right.
         double scale = 1.0;
-        // Position fixes where the attempt begins; elapsed time carries it from
-        // there. Model error then applies once instead of compounding.
-        double clockBase = 0.0;
+
+        // The clock.
+        //
+        // A macro recorded from the start of a level is a list of moments
+        // measured in gameplay seconds, and m_timePlayed is gameplay seconds.
+        // They are the same quantity, so for a run from the start the clock is
+        // just m_timePlayed and there is nothing to model, nothing to
+        // integrate, and nothing to drift. Speed portals, dash orbs, lag, frame
+        // rate and physics bypass all cancel because both sides are counted in
+        // the same time.
+        //
+        // Position is consulted exactly once, to answer "how far into the macro
+        // does this attempt begin", and only when the answer is not zero. It is
+        // never allowed to touch the clock again: it was position feedback that
+        // dragged the old clock off, since a position timeline built from a
+        // wrong start speed runs fast and takes the indicators with it.
+        double clockBase = 0.0;    // macro seconds at the anchor
+        double timeBase = 0.0;     // m_timePlayed at the anchor
+        bool   anchored = false;
+        // Fallback for the case where m_timePlayed does not advance: hand
+        // accumulated dt, which is worse but never freezes.
         double clockAccum = 0.0;
-        bool   clockBased = false;
+        bool   gameTimer = true;
+        double timerStall = 0.0;
         double lastDriftLog = 0.0;
+        bool   platformer = false;
+
+        // Measured speed profile, see kBucket. This is what the portal scan
+        // was trying to compute and kept getting wrong: portals sitting off
+        // the route, dash orbs, and anything else a static scan cannot see.
+        std::vector<uint16_t> prof;
+        bool   profDirty = false;
+        std::string profKey;
+        float  lastProfX = -1e9f;     // window the current speed reading spans
+        double lastProfT = 0.0;
         float  startSpeed = kSpeeds[1];
         bool   startSpeedKnown = false;
         std::string speedKey;
@@ -399,7 +575,7 @@ class $modify(IndicatorLayer, PlayLayer) {
         ccColor4F flashCol = { 1.f, 1.f, 1.f, 1.f };
 
         static constexpr int kQueue = 32;
-        double  pressTimes[kQueue] = {};
+        double  pressTimes[kQueue] = {};   // macro time the click landed on
         uint8_t pressIsP2[kQueue] = {};
         std::atomic<int> pressWrite{ 0 };
         int    pressRead = 0;
@@ -427,6 +603,8 @@ class $modify(IndicatorLayer, PlayLayer) {
         // macro-clock time of the first real press this attempt, for Align.
         // negative means the player has not clicked yet.
         double   firstClickAt = -1.0;
+        static constexpr size_t kClickLog = 64;
+        std::vector<double> clickLog;   // P1 press times this attempt
         bool     calibrating = false;   // next real click sets the offset
         std::string offsetKey;
 
@@ -449,20 +627,68 @@ class $modify(IndicatorLayer, PlayLayer) {
         f->speedKey = "startspeed-" + (level->m_levelID.value() > 0
                         ? std::to_string(level->m_levelID.value())
                         : ("local-" + std::string(level->m_levelName)));
-        f->offsetKey = "offset-" + levelKey(level);
+        // Deliberately not "offset-" or "offset2-". Both earlier key names hold
+        // values that were fitted against a clock that was wrong, so carrying
+        // them into a clock that is right would import the error. Zero is the
+        // correct offset for a macro recorded from the start of a level, and
+        // that is what everyone now gets.
+        f->offsetKey = "offset3-" + levelKey(level);
         f->offsetFrames = Mod::get()->getSavedValue<int64_t>(f->offsetKey, 0);
 
-        const double cached = Mod::get()->getSavedValue<double>(f->speedKey, 0.0);
-        if (cached > 100.0) {
-            f->startSpeed = float(cached);
-            f->startSpeedKnown = true;
-            log::info("start speed {:.0f} u/s from cache", f->startSpeed);
+        // The level says what speed it opens at, right there in its header.
+        // Everything before this guessed: assume 1x, then watch the player and
+        // measure. That is why a level opening at 0.5x or 4x laid its bars out
+        // wrong for the whole of the first run on a machine that had not played
+        // it before, which is exactly the "indicators drift towards me" that
+        // only ever showed up on someone else's install. Read it instead.
+        if (this->m_levelSettings) {
+            // Speed enum order is Normal, Slow, Fast, Faster, Fastest, which is
+            // 1x, 0.5x, 2x, 3x, 4x. kSpeeds is in ascending speed order.
+            static const int kFromEnum[5] = { 1, 0, 2, 3, 4 };
+            const int e = int(this->m_levelSettings->m_startSpeed);
+            if (e >= 0 && e < 5) {
+                f->startSpeed = kSpeeds[kFromEnum[e]];
+                f->startSpeedKnown = true;
+                log::info("start speed {:.0f} u/s from the level header",
+                          f->startSpeed);
+            }
+        }
+
+        if (!f->startSpeedKnown) {
+            const double cached = Mod::get()->getSavedValue<double>(f->speedKey, 0.0);
+            if (cached > 100.0) {
+                f->startSpeed = float(cached);
+                f->startSpeedKnown = true;
+                log::info("start speed {:.0f} u/s from cache", f->startSpeed);
+            }
+        }
+
+        f->profKey = "vprof-" + levelKey(level);
+        f->prof = unpackProf(Mod::get()->getSavedValue<std::string>(f->profKey, ""));
+        if (!f->prof.empty()) {
+            size_t known = 0;
+            for (auto v : f->prof) if (v) ++known;
+            log::info("measured speed profile: {} of {} slices known, out to x {:.0f}",
+                      known, f->prof.size(), double(f->prof.size()) * kBucket);
         }
 
         // built even when no macro matched. picking one from the pause menu
         // later flips active on, and it would explode on null nodes otherwise.
+        // Draw above the level rather than inside it. As a child of
+        // m_objectLayer the bars sit in the middle of the level's own z-order
+        // and deco gets painted over them. Hanging them off the same PARENT
+        // instead, at a z just above the object layer, puts them on top of
+        // everything the level draws while staying below whatever the game put
+        // higher up, so the UI is not covered. The transform is copied every
+        // frame in postUpdate, so the coordinates the renderer works in do not
+        // change at all.
         f->world = makeNode();
-        m_objectLayer->addChild(f->world, kWorldZ);
+        if (auto host = m_objectLayer->getParent()) {
+            host->addChild(f->world, m_objectLayer->getZOrder() + 1);
+            f->worldDetached = true;
+        } else {
+            m_objectLayer->addChild(f->world, kWorldZ);
+        }
 
         f->laneRoot = CCNode::create();
         this->addChild(f->laneRoot, kLaneZ);
@@ -489,10 +715,14 @@ class $modify(IndicatorLayer, PlayLayer) {
             log::info("no macro for this level, nodes ready for a manual pick");
             return true;
         }
-        if (rep->platformer) { log::info("platformer macro, skipped"); return true; }
-
         intake(*rep);
         f->active = true;
+
+        // Try the object scan now rather than waiting for the first frame.
+        // Everything the layout depends on, the speed timeline and the check
+        // on the macro's declared rate, is then already settled before a
+        // single indicator is drawn.
+        tryScanPortals();
         return true;
     }
 
@@ -512,8 +742,17 @@ class $modify(IndicatorLayer, PlayLayer) {
         f->portalsScanned = true;
 
         const double walk = timeToReach(f->levelEndX);
-        if (walk > 1.0) f->posClock = true;
-        else log::warn("walk came out at {:.2f}s, keeping the accumulated clock", walk);
+        // In a platformer x is not a clock. You can stand still, walk back,
+        // and be sent anywhere by a teleport, so every position derived number
+        // is meaningless there and the step counter is the only clock.
+        if (f->platformer) {
+            f->posClock = false;
+            log::info("platformer level, running on physics steps only");
+        } else if (walk > 1.0) {
+            f->posClock = true;
+        } else {
+            log::warn("walk came out at {:.2f}s, keeping the accumulated clock", walk);
+        }
         // if macro shorter its fine because end screens, if longer "fuck" i guesss
         const bool bad = walk > 1.0 && f->macroSeconds > walk * 1.02;
         log::info("scanned {} objects on try {}: {} speed portals, level ends at x {:.0f}",
@@ -534,7 +773,54 @@ class $modify(IndicatorLayer, PlayLayer) {
                       f->portals.size() > 1 ? f->portals[1].v : 0.f,
                       f->portals.size() > 1 ? f->portals[1].x : 0.f);
 
-        // if statement after if statement this does something important
+        checkDeclaredFps(walk);
+    }
+
+    // Some bots write their own recording setting into the framerate field
+    // instead of the rate the frame numbers are actually counted in. MEGA does
+    // it: a macro saved with the game set to 1200 says "1200 tps" but its frame
+    // numbers are plain physics steps at 240, so dividing by 1200 collapses the
+    // whole macro into a fifth of the level and every indicator lands early and
+    // bunched up. Death Corridor was exactly this.
+    //
+    // The level itself settles it. Reading the macro at the declared rate makes
+    // it 25s long on a level that takes 127s to walk, and 127/25 is 1200/240 to
+    // within half a percent. That agreement between two independent numbers is
+    // what makes it safe to act on.
+    //
+    // Deliberately narrow. It only fires when the declared rate is ABOVE the
+    // 240 GD actually steps at, which is the only case a bot can overstate. A
+    // macro that says 240 is never touched, so a genuine part-of-the-level
+    // recording, which is also shorter than its level, cannot be caught by
+    // this and rescaled into nonsense.
+    void checkDeclaredFps(double walk) {
+        auto f = m_fields.self();
+        if (f->platformer || walk < 1.0 || f->holds.empty()) return;
+        if (f->fps <= 260.0) return;                  // not overstated, leave it
+        if (f->macroSeconds > walk * 0.75) return;    // already spans the level
+
+        double best = 0.0, bestErr = 1e9;
+        for (double cand : kTpsTable) {
+            if (cand >= f->fps - 1.0) continue;       // only rates below declared
+            const double corrected = f->macroSeconds * (f->fps / cand);
+            const double err = std::abs(corrected - walk) / walk;
+            if (err < bestErr) { bestErr = err; best = cand; }
+        }
+        if (best <= 0.0 || bestErr > 0.12) {
+            log::warn("macro says {:.0f} tps and reads as {:.2f}s, but this level "
+                      "walks in {:.2f}s. Cannot tell what rate it was really "
+                      "counted at, leaving it alone.", f->fps, f->macroSeconds, walk);
+            return;
+        }
+
+        const double was = f->fps;
+        f->fps = best;
+        f->macroSeconds = f->macroSeconds * (was / best);
+        log::warn("macro claims {:.0f} tps but its frames are counted at {:.0f}: "
+                  "at {:.0f} it would be {:.2f}s on a {:.2f}s level, at {:.0f} it "
+                  "is {:.2f}s ({:.1f}% off). Using {:.0f}.",
+                  was, best, was, f->macroSeconds * best / was, walk,
+                  best, f->macroSeconds, bestErr * 100.0, best);
     }
 
     void scanPortals() {
@@ -596,6 +882,7 @@ class $modify(IndicatorLayer, PlayLayer) {
     // drop the cheat flag on the way out so it does not stay lit in the menus
     void onQuit() {
         setCheating(false);
+        saveProf();
         PlayLayer::onQuit();
     }
 
@@ -608,6 +895,10 @@ class $modify(IndicatorLayer, PlayLayer) {
         f->active = false;
         if (rep) {
             intake(*rep);
+            // intake resets fps to whatever the file declares, so a macro that
+            // overstates its rate has to be re-checked here or picking it from
+            // the pause menu would undo the correction the level load made.
+            if (f->portalsScanned) checkDeclaredFps(timeToReach(f->levelEndX));
             f->active = !f->holds.empty();
         } else {
             f->state.clear();
@@ -623,39 +914,80 @@ class $modify(IndicatorLayer, PlayLayer) {
 
     // Line the macro up with where you actually clicked. Takes the first real
     // press of the attempt and the macro's first press, and stores the gap as
-    // this level's offset. Handles the case where a macro carries a stray
-    // click at the very start, which is what threw the timing off.
+    // this level's offset.
+    //
+    // This used to have a second mode that pinned macro frame 0 to the level's
+    // anticheat spike. That existed to paper over a clock that did not know
+    // where in the level it was; it was correcting the clock's error, not the
+    // macro's. The clock counts physics steps now and macro frame 0 is level
+    // start by construction, so pinning to the spike would introduce exactly
+    // the offset it used to cancel. Gone, and the saved offsets it wrote are
+    // abandoned along with it, see offsetKey.
     // Returns the new offset in frames, or INT_MIN if it could not align.
-    // Align using the anticheat spike. The spike is where the macro STARTS,
-    // frame 0, not where its first click lands. There is usually a gap between
-    // the two, so matching the first press to the spike drags everything back
-    // by that gap. What we want is macro frame 0 sitting on the spike, and the
-    // first click falling wherever it naturally falls after it.
+    // Align by matching the SHAPE of what you played against the macro.
+    //
+    // Matching a single click to the nearest press only works when the macro
+    // is already close, because "nearest" stops meaning anything once the
+    // error is bigger than the gap between presses. That is exactly the case
+    // on a start position deep into a level nobody has played through, where
+    // the anchor is estimated and can be a second or more out. A rhythm of
+    // several clicks is unambiguous where one click is not: slide it along the
+    // macro and only the true offset makes all of them land at once.
+    //
     // Returns the new offset in frames, or INT_MIN if it could not align.
-    int alignToSpike() {
+    int alignByPattern() {
         auto f = m_fields.self();
-        if (f->holds.empty()) return INT_MIN;
-        if (f->spikeX < 0.f || f->spikeTime < 0.0) return INT_MIN;
-        if (f->spikeTime > 30.0) return INT_MIN;   // nowhere near the start
+        if (f->holds.empty() || f->clickLog.size() < 3) return INT_MIN;
 
-        // put macro frame 0 on the spike, whatever the offset is right now
-        const int want = int(std::llround(f->spikeTime * f->fps));
-        f->offsetFrames = want;
-        Mod::get()->setSavedValue<int64_t>(f->offsetKey, int64_t(want));
+        std::vector<double> mt;
+        mt.reserve(f->holds.size());
+        for (auto const& h : f->holds)
+            if (!h.player2) mt.push_back(double(h.start) / f->fps);
+        if (mt.size() < 2) return INT_MIN;
+        std::sort(mt.begin(), mt.end());
+
+        // Cost of a candidate shift: how far each click sits from the nearest
+        // macro press, capped so one stray click cannot outvote the rest.
+        const double cap = 0.25;
+        auto costOf = [&](double sh) {
+            double score = 0.0;
+            for (double c : f->clickLog) {
+                const double t = c + sh;
+                auto it = std::lower_bound(mt.begin(), mt.end(), t);
+                double d = cap;
+                if (it != mt.end())   d = std::min(d, *it - t);
+                if (it != mt.begin()) d = std::min(d, t - *(it - 1));
+                score += d;
+            }
+            return score;
+        };
+
+        double bestShift = 0.0, bestScore = 1e18;
+        for (int i = -6000; i <= 6000; ++i) {          // +/- 6s, 1ms steps
+            const double sh = double(i) * 0.001;
+            const double score = costOf(sh);
+            if (score < bestScore) { bestScore = score; bestShift = sh; }
+        }
+
+        const double perClick = bestScore / double(f->clickLog.size());
+        if (perClick > 0.06) {
+            log::warn("pattern align: best fit is {:.0f}ms off per click, too "
+                      "loose to trust. Play the section again more cleanly.",
+                      perClick * 1000.0);
+            return INT_MIN;
+        }
+
+        f->offsetFrames += int(std::llround(-bestShift * f->fps));
+        Mod::get()->setSavedValue<int64_t>(f->offsetKey, int64_t(f->offsetFrames));
         reloadMacro();
-
-        log::info("spike aligned: macro frame 0 -> spike at {:.3f}s, offset {}f, "
-                  "first click now at {:.3f}s",
-                  f->spikeTime, f->offsetFrames,
-                  double(f->firstPressFrame) / f->fps);
+        log::info("pattern aligned on {} clicks: shift {:+.3f}s, {:.0f}ms per "
+                  "click, offset now {}f",
+                  f->clickLog.size(), -bestShift, perClick * 1000.0, f->offsetFrames);
         return f->offsetFrames;
     }
 
-    bool canSpikeAlign() {
-        auto f = m_fields.self();
-        return !f->holds.empty() && f->spikeX >= 0.f
-            && f->spikeTime >= 0.0 && f->spikeTime <= 30.0;
-    }
+    bool canPatternAlign() { return m_fields->clickLog.size() >= 3
+                                 && !m_fields->holds.empty(); }
 
     int alignToFirstClick() {
         auto f = m_fields.self();
@@ -689,8 +1021,12 @@ class $modify(IndicatorLayer, PlayLayer) {
         auto f = m_fields.self();
         if (!f->active) return;
 
+        saveProf();         // keep whatever the attempt that just ended learned
+        f->lastProfX = -1e9f;
+        f->lastProfT = 0.0;
         f->levelTime = 0.0;
         f->firstClickAt = -1.0;
+        f->clickLog.clear();
         f->spikeTime = -1.0;
         f->spikeX = -1.f;
         f->everDual = false;
@@ -699,13 +1035,22 @@ class $modify(IndicatorLayer, PlayLayer) {
         f->lastX = f->startX;
         f->speed = kSpeeds[1];
         f->lastSpeedTime = 0.0;
+        f->spawnX = -1e9f;
+        f->measX0 = -1.f;
+        f->measT0 = 0.0;
         f->cursor = 0;
         f->missCursor = 0;
         f->fallbackNow = 0.0;
         f->clockBase = 0.0;
         f->clockAccum = 0.0;
-        f->clockBased = false;
+        f->timeBase = 0.0;
+        f->gameTimer = true;
+        f->timerStall = 0.0;
         f->lastDriftLog = 0.0;
+        // Drop the anchor on every reset. A practice respawn puts the player
+        // somewhere else in the level, so where in the macro the next attempt
+        // begins has to be worked out again.
+        f->anchored = false;
         f->nPerfect = f->nOk = f->nMiss = 0;
         f->verdictAt = -10.0;
         f->flashAt = -10.0;
@@ -719,9 +1064,12 @@ class $modify(IndicatorLayer, PlayLayer) {
     }
 
     // and this code has even gotten me back to drinking
+    //
+    // Where we are in the macro, in macro seconds.
     double absTime() {
         auto f = m_fields.self();
-        if (!f->posClock || !f->clockBased) return f->fallbackNow;
+        if (!f->anchored) return f->fallbackNow;
+        if (f->gameTimer) return f->clockBase + (this->m_timePlayed - f->timeBase);
         return f->clockBase + f->clockAccum;
     }
 
@@ -730,6 +1078,81 @@ class $modify(IndicatorLayer, PlayLayer) {
         return tAtX(m_player1 ? m_player1->getPositionX() : 0.f);
     }
 
+    // Time to reach px, integrating the measured speed profile and falling
+    // back to the portal model for slices nobody has crossed yet. Sets
+    // *coverage to the fraction that came from measurement, so the log can say
+    // how much of the answer is real.
+    double profTime(float px, double* coverage = nullptr) {
+        auto f = m_fields.self();
+        if (coverage) *coverage = 0.0;
+        if (px <= 0.f) return 0.0;
+
+        double t = 0.0;
+        size_t measured = 0, total = 0;
+        for (float x = 0.f; x < px; x += kBucket) {
+            const float w = std::min(kBucket, px - x);
+            const size_t b = size_t(x / kBucket);
+            ++total;
+
+            float v = 0.f;
+            if (b < f->prof.size() && f->prof[b] > 0) { v = float(f->prof[b]); ++measured; }
+            else v = speedAt(x + w * 0.5f);
+            if (v < 1.f) v = kSpeeds[1];
+
+            t += double(w) / double(v);
+        }
+        if (coverage && total) *coverage = double(measured) / double(total);
+        return t;
+    }
+
+    // Learn how fast the player really moves through each slice of the level.
+    // Runs on every attempt, from anywhere, because speed at a position is a
+    // property of the level rather than of the run.
+    void measureProfile(float px, bool alive) {
+        auto f = m_fields.self();
+        if (!alive || f->platformer) return;
+
+        if (f->lastProfX < -1e8f) {
+            f->lastProfX = px;
+            f->lastProfT = this->m_timePlayed;
+            return;
+        }
+
+        const double span = this->m_timePlayed - f->lastProfT;
+        if (span < 0.05) return;          // long enough to be precise
+
+        const float from = f->lastProfX;
+        const float dx = px - from;
+        f->lastProfX = px;
+        f->lastProfT = this->m_timePlayed;
+
+        if (dx <= 0.f) return;            // stopped, dead, or moving backwards
+        const float v = float(dx / span);
+        if (v < 1.f || v > 2000.f) return;
+
+        size_t b0 = size_t(std::max(0.f, from) / kBucket);
+        size_t b1 = size_t(std::max(0.f, px) / kBucket);
+        if (b0 >= kMaxBuckets) return;
+        if (b1 >= kMaxBuckets) b1 = kMaxBuckets - 1;
+        if (f->prof.size() <= b1) f->prof.resize(b1 + 1, 0);
+
+        const uint16_t nv = uint16_t(std::lround(v));
+        for (size_t b = b0; b <= b1; ++b) {
+            // Only rewrite on a real disagreement, so a steady reading does not
+            // mark the profile dirty on every single frame.
+            if (f->prof[b] == 0 || std::abs(int(f->prof[b]) - int(nv)) > 3) {
+                f->prof[b] = nv;
+                f->profDirty = true;
+            }
+        }
+    }
+
+    void saveProf() {
+        auto f = m_fields.self();
+        if (!f->profDirty || f->profKey.empty() || f->prof.empty()) return;
+        f->profDirty = false;
+        Mod::get()->setSavedValue<std::string>(f->profKey, packProf(f->prof));
+    }
     // The level's opening speed lives in the level header, not in any object, (CLAUDE CODE FABLE 5 SORRY KINGS)
     // so a level that starts at 4x with its first portal thousands of units in
     // looks like a 1x level to an object scan. Measure it instead: run from the
@@ -745,17 +1168,51 @@ class $modify(IndicatorLayer, PlayLayer) {
 
     void learnStartSpeed(float px) {
         auto f = m_fields.self();
+        if (f->platformer) return;   // no such thing as a scroll speed here
         if (f->startSpeedKnown || !f->portalsScanned) return;
-        if (f->levelTime < 0.20) return;
+
         const float firstPortalX = f->portals.empty() ? 1e9f : f->portals[0].x;
         if (px >= firstPortalX) return;    // past it, no longer observable
 
-        const float s = snapSpeed(f->speed);
+        // Measure between two fixed points in time rather than smoothing a per
+        // frame estimate. The old version blended once per frame and snapped at
+        // a fixed 0.20s, so at 240 fps it had converged and at 30 fps it had
+        // barely started, and the snap could land on the wrong speed. Which
+        // speed it picked then decided every bar position for the whole level.
+        // Displacement over elapsed time does not care how many frames it took.
+        const double t = f->gameTimer ? this->m_timePlayed : f->levelTime;
+
+        if (f->spawnX < -1e8f) f->spawnX = px;
+
+        if (f->measX0 < 0.f) {
+            // Open the window on movement, not on the clock. Waiting a fixed
+            // fraction of a second means any pause at spawn lands inside the
+            // window and drags the average down, which snapped fast levels to
+            // a slower speed at every frame rate. Once the player has actually
+            // covered ground we know the reading is all motion.
+            if (px - f->spawnX < 10.f) return;
+            f->measX0 = px;
+            f->measT0 = t;
+            return;
+        }
+
+        const double span = t - f->measT0;
+        if (span < 0.25) return;           // long enough to be precise
+
+        const float v = float((px - f->measX0) / span);
+        if (v < 1.f || v > 2000.f) return; // nonsense, wait for a better window
+
+        const float s = snapSpeed(v);
         f->startSpeed = s;
         f->startSpeedKnown = true;
         Mod::get()->setSavedValue<double>(f->speedKey, double(s));
-        scanPortals();                     // rebuild the timeline on the new opening
-        log::info("learned start speed {:.0f} u/s, cached as \"{}\"", s, f->speedKey);
+        // Cached for next time, NOT rebuilt now. Rebuilding the timeline while
+        // you are playing respaces every bar on screen, and a bar that moves
+        // while you are reading it is worse than a bar that is slightly wrong.
+        // The clock does not depend on this, and the next load picks it up.
+        log::info("learned start speed {:.0f} u/s from {:.0f} units over {:.2f}s, "
+                  "cached as \"{}\". Takes effect next time this level loads.",
+                  s, px - f->measX0, span, f->speedKey);
     }
 
     double timeToReach(float targetX) { return tAtX(targetX); }
@@ -787,6 +1244,24 @@ class $modify(IndicatorLayer, PlayLayer) {
     }
 
     // Position at a macro time, the exact inverse of tAtX.
+    // Where a macro time lands on screen, measured FROM THE PLAYER rather than
+    // from the start of the level.
+    //
+    // xAt() integrates a speed timeline rebuilt from the level's portals, and
+    // any error in it, a mis-snapped start speed or a portal the scan missed,
+    // keeps adding up the further you get. That is why the bars looked fine
+    // early and were visibly wrong by 18% of Bloodbath, and why the rhythm lane
+    // stayed correct throughout: the lane places notes by time, only the world
+    // bars go through this.
+    //
+    // The player is at px at time now, by definition. Taking the difference
+    // cancels whatever the timeline has got wrong so far, so the only error
+    // left is whatever happens inside the lookahead window, about two seconds,
+    // instead of everything since the start.
+    float xRel(double t, double now, float px) {
+        return px + (xAt(t) - xAt(now));
+    }
+
     float xAt(double t) {
         auto f = m_fields.self();
         auto const& S = f->segs;
@@ -833,7 +1308,11 @@ class $modify(IndicatorLayer, PlayLayer) {
         const bool alive = !m_player1->m_isDead;
         if (alive) {
             f->levelTime += std::min(dt, kMaxStep);
-            if (!f->posClock) f->fallbackNow += std::min(dt, kMaxStep);
+            // What the clock reads in the few frames before the anchor is
+            // taken. Level time is the right answer there, since an attempt is
+            // at the start of the level until something says otherwise.
+            f->fallbackNow = f->gameTimer ? this->m_timePlayed
+                                          : f->fallbackNow + std::min(dt, kMaxStep);
         }
 
         const float px = m_player1->getPositionX();
@@ -851,31 +1330,111 @@ class $modify(IndicatorLayer, PlayLayer) {
         tryScanPortals();
         learnStartSpeed(px);
 
-        // test if works w lag love
-        if (f->posClock && alive) {
-            if (!f->clockBased) {
-                f->clockBase = posTime();
-                f->clockAccum = 0.0;
-                f->clockBased = true;
-                if (f->clockBase > 0.05)
-                    log::info("attempt starts at x {:.0f} = {:.2f}s into the macro",
-                              px, f->clockBase);
+        // Anchor once per attempt, then let the game's own play timer run.
+        // See absTime().
+        //
+        // Played from the beginning the anchor is zero and nothing is modelled
+        // at all. Resuming from a start position or a checkpoint is the only
+        // case that needs an estimate of where in the macro we are, so the
+        // object scan is waited on first to give that estimate something to
+        // work with.
+        // Ask the game, do not infer it from x. A start position sitting near
+        // the level start, or any level whose first object is not at x 0,
+        // reads as a fresh run to a position test and would put the whole
+        // macro at the wrong place.
+        const bool fromStart = !this->m_startPosObject && !this->m_currentCheckpoint;
+
+        // A run from the start needs no estimate, so it does not wait for the
+        // scan. Only the resume path does.
+        if (alive && !f->anchored && (fromStart || f->portalsScanned || f->platformer)) {
+            if (fromStart || f->platformer) {
+                f->clockBase = 0.0;
+            } else {
+                double cov = 0.0;
+                f->clockBase = profTime(px, &cov);
+                log::info("resuming at x {:.0f} = {:.2f}s into the macro "
+                          "({:.0f}% of that measured, the rest estimated from "
+                          "speed portals)", px, f->clockBase, cov * 100.0);
+                if (cov < 0.98)
+                    log::info("  the estimated part is the error you will feel. "
+                              "Playing through the unmeasured stretch once "
+                              "replaces it, or use Align in the pause menu.");
+            }
+
+            // From the start, macro time IS the play timer, so the base is a
+            // true zero and the couple of frames it took to get here are not
+            // lost. Resuming, measure elapsed from the anchor instead, which
+            // stays correct whether or not GD rewinds the timer on a respawn.
+            f->timeBase = fromStart ? 0.0 : this->m_timePlayed;
+            f->clockAccum = 0.0;
+            f->anchored = true;
+        }
+
+        // m_timePlayed is the number behind the in game time display and it is
+        // what the clock rides on. If it ever stops advancing while the player
+        // is alive and moving, fall back to accumulated dt rather than freeze
+        // every note on screen.
+        if (f->anchored && alive) {
+            if (f->gameTimer) {
+                const double elapsed = this->m_timePlayed - f->timeBase;
+                if (elapsed <= f->clockAccum + 1e-9) {
+                    f->timerStall += dt;
+                    if (f->timerStall > 0.5) {
+                        f->gameTimer = false;
+                        log::warn("game timer is not advancing, falling back to "
+                                  "accumulated time");
+                    }
+                } else {
+                    f->timerStall = 0.0;
+                    f->clockAccum = elapsed;
+                }
             } else {
                 f->clockAccum += std::min(dt, kMaxStep);
-                const double drift = posTime() - (f->clockBase + f->clockAccum);
-                if (std::abs(drift) > 1.0) {
-                    log::info("re-anchoring, position is {:.2f}s from the clock", drift);
-                    f->clockBase = posTime();
-                    f->clockAccum = 0.0;
-                } else if (f->levelTime > f->lastDriftLog + 5.0) {
-                    f->lastDriftLog = f->levelTime;
-                    log::debug("drift at x {:.0f}: {:+.3f}s ({:+.0f} frames)",
-                               px, drift, drift * f->fps);
-                }
             }
         }
 
+        measureProfile(px, alive);
+
+        // The position timeline is now only a diagnostic. When it disagrees
+        // with the clock the clock is the one to believe: a timeline built on
+        // the wrong start speed, or on portals the player never passes through,
+        // runs at the wrong rate and used to take the indicators with it.
+        if (f->anchored && alive && f->posClock && !f->platformer
+            && f->levelTime > f->lastDriftLog + 5.0) {
+            f->lastDriftLog = f->levelTime;
+            const double drift = posTime() - absTime();
+            if (std::abs(drift) > 0.25)
+                log::debug("position timeline is {:+.3f}s off the clock at x {:.0f}, "
+                           "clock wins", drift, px);
+        }
+        // Keep the detached world node standing exactly where the object layer
+        // stands. Content size is left at zero so the anchor point cannot
+        // introduce an offset, which is what lets a plain copy of position,
+        // scale, rotation and skew reproduce the transform exactly.
+        if (f->worldDetached && m_objectLayer) {
+            f->world->setPosition(m_objectLayer->getPosition());
+            f->world->setScaleX(m_objectLayer->getScaleX());
+            f->world->setScaleY(m_objectLayer->getScaleY());
+            f->world->setRotation(m_objectLayer->getRotation());
+            f->world->setSkewX(m_objectLayer->getSkewX());
+            f->world->setSkewY(m_objectLayer->getSkewY());
+        }
+
         const Look L = readSettingsCached();
+
+        // Draw nothing until the anchor is in AND the level has been scanned.
+        // Before either, the clock reads roughly zero and the position
+        // timeline is empty, so bars would be laid out against a flat 1x
+        // guess and then jump when the real one arrives. A blank frame is
+        // better than a frame that lies, especially on a level whose first
+        // click comes early enough to be confused by the jump.
+        if (!f->anchored || !f->portalsScanned) {
+            f->world->clear();
+            f->lane->clear();
+            hideSprites();
+            return;
+        }
+
         const double macroNow = absTime();
         const double now = macroNow - L.offset;
 
@@ -883,18 +1442,25 @@ class $modify(IndicatorLayer, PlayLayer) {
         const int w = f->pressWrite.load(std::memory_order_acquire);
         while (f->pressRead < w) {
             const int slot = f->pressRead % Fields::kQueue;
-            const double back = std::max(0.0, f->levelTime - f->pressTimes[slot]);
-            judgePress(macroNow - back, f->pressIsP2[slot] != 0, L);
+            judgePress(f->pressTimes[slot], f->pressIsP2[slot] != 0, L);
             ++f->pressRead;
         }
 
-        // timeline speed must be equal speed user is at
-        if (f->posClock && alive && f->levelTime > f->nextCheckAt) {
-            f->nextCheckAt = f->levelTime + 2.0;
+        // Report only. An earlier version rewrote the cached start speed from
+        // this comparison and it was a mistake twice over: f->speed is a
+        // smoothed estimate that begins each attempt at its initialised value,
+        // so the first comparison is always against a reading that has not
+        // converged, and "correcting" from it flipped the cached speed back
+        // and forth every couple of seconds. Each flip rebuilt the timeline,
+        // which is what made the indicators visibly shift while playing. The
+        // measured profile below is where a wrong model actually gets fixed.
+        if (f->posClock && alive && !f->platformer
+            && f->levelTime > 3.0 && f->levelTime > f->nextCheckAt) {
+            f->nextCheckAt = f->levelTime + 5.0;
             const float want = speedAt(px), got = f->speed;
             if (std::abs(want - got) > 25.f)
-                log::warn("speed mismatch at x {:.0f}: timeline says {:.0f}, player is doing {:.0f}",
-                          px, want, got);
+                log::debug("speed at x {:.0f}: timeline says {:.0f}, player is "
+                           "doing {:.0f}", px, want, got);
         }
 
         // One transform on the container covers every layout, so both note
@@ -915,7 +1481,12 @@ class $modify(IndicatorLayer, PlayLayer) {
                 // positions drop straight out. Rotated, not mirrored, so
                 // nothing ends up back to front.
                 const float band = f->lbX1 - f->lbX0;          // thickness now
-                const float pad  = winSz.width * 0.175f;   // in from the edge
+                // Where the hit line sits along the screen. Was pinned at
+                // 0.175 of the width, hard against the edge; now it follows
+                // the Middle lane hit position setting so the aim point can be
+                // brought towards the centre. drawLaneFlat sizes the ladder
+                // off the same number, so the run-in always fits what is left.
+                const float pad  = winSz.width * L.midHit;
                 const float cy   = winSz.height - winSz.height * 0.025f - band;
 
                 root->setScaleX(1.f);
@@ -945,26 +1516,33 @@ class $modify(IndicatorLayer, PlayLayer) {
 
         retireActive(now);
         scoreMissed(now, L);
-        drawWorld(px, now, L);
+        // The world bars place notes by converting macro time back into an x,
+        // which needs a level where x and time mean the same thing. In a
+        // platformer they would be drawn at invented positions, so the lane
+        // is the only honest view there.
+        if (f->platformer) f->world->clear();
+        else               drawWorld(px, now, L);
         drawLane(now, L);
         updateLabels(L);
     }
 
     // hold and leave
     // p2 notes only count once the level has actually been dual
+    // Live dual state, not a latch. It used to stay on for the rest of the
+    // level once a dual portal had been passed, so a level with one dual
+    // section carried a second column of notes all the way to the end.
     bool p2Live() {
         auto f = m_fields.self();
-        return f->hasP2 && f->everDual;
+        return f->hasP2 && this->m_gameState.m_isDualMode;
     }
 
     bool skipP2(gdr2::Hold const& h) {
         if (!h.player2) return false;
         auto f = m_fields.self();
-        if (f->everDual) return false;
+        if (this->m_gameState.m_isDualMode) return false;
         if (!f->p2Warned) {
             f->p2Warned = true;
-            log::warn("macro has player 2 inputs but this level is not dual, "
-                      "hiding them");
+            log::info("player 2 notes are hidden outside dual sections");
         }
         return true;
     }
@@ -1032,13 +1610,19 @@ class $modify(IndicatorLayer, PlayLayer) {
         auto f = m_fields.self();
 
         f->fps = rep.framerate > 0 ? rep.framerate : 240.0;
+        f->platformer = rep.platformer;
         auto all = rep.holds();
 
+        // Buttons 2 and 3 are left/right. In a classic level they are noise
+        // that showed up as phantom notes; in a platformer level they are real
+        // movement, but there is nowhere to draw them, so jump notes are what
+        // gets shown either way. The macro is no longer thrown away for having
+        // them, which is what used to make every platformer macro do nothing.
         size_t dropped = 0;
         f->holds.clear();
         f->holds.reserve(all.size());
         for (auto h : all) {
-            if (!rep.platformer && h.button != 1) { ++dropped; continue; }
+            if (h.button != 1) { ++dropped; continue; }
             const int64_t s = int64_t(h.start) + f->offsetFrames;
             const int64_t e = int64_t(h.end)   + f->offsetFrames;
             if (e < 0) { ++dropped; continue; }
@@ -1047,7 +1631,8 @@ class $modify(IndicatorLayer, PlayLayer) {
             f->holds.push_back(h);
         }
         if (dropped)
-            log::info("dropped {} non jump / out of range presses", dropped);
+            log::info("dropped {} {} presses", dropped,
+                      rep.platformer ? "left/right movement" : "non jump / out of range");
 
         f->hasP2 = false;
         for (auto const& h : f->holds)
@@ -1078,7 +1663,10 @@ class $modify(IndicatorLayer, PlayLayer) {
 
         const int w = f->pressWrite.load(std::memory_order_relaxed);
         const int slot = w % Fields::kQueue;
-        f->pressTimes[slot] = f->levelTime;
+        // Read the clock here, in the update the click actually arrived in,
+        // rather than working backwards from when the draw loop got round to
+        // it. What gets scored is then the real error, not an estimate of it.
+        f->pressTimes[slot] = absTime();
         f->pressIsP2[slot]  = isP2 ? 1 : 0;
         f->pressWrite.store(w + 1, std::memory_order_release);
     }
@@ -1088,6 +1676,10 @@ class $modify(IndicatorLayer, PlayLayer) {
         // remembered before any of the early returns, so Align still works on
         // a level where nothing has matched yet
         if (f->firstClickAt < 0.0 && !isP2) f->firstClickAt = pressTime - L.offset;
+        // Kept for pattern align. One click cannot tell you which press it was
+        // when the anchor is a second or two out; a handful of them can.
+        if (!isP2 && f->clickLog.size() < Fields::kClickLog)
+            f->clickLog.push_back(pressTime - L.offset);
         if (f->holds.empty()) return;
         if (f->state.size() != f->holds.size()) return;
         if (f->judged.size() != f->holds.size()) return;
@@ -1109,7 +1701,7 @@ class $modify(IndicatorLayer, PlayLayer) {
 
         if (best == SIZE_MAX || std::abs(bestDelta) > missWindow) {
             ++f->nMiss;
-            const ccColor4F miss = verdictColour(9999, L.perfectFrames, L.okFrames);
+            const ccColor4F miss = verdictColour(1e9, L.perfectSec, L.okSec);
             flash(miss);
             if (L.showAccuracy) setVerdict(fmt::format("{}MISS", who), toC3B(miss));
             return;
@@ -1120,21 +1712,23 @@ class $modify(IndicatorLayer, PlayLayer) {
         f->state[best]  = tap ? kDone : kActive;
         f->judged[best] = 1;
 
-        const int frames = int(std::lround(bestDelta * f->fps));
-        const int off = std::abs(frames);
-        const char* sign = frames > 0 ? "+" : "-";
+        // Reported in ms. Frames were misleading across macros: 30 frames off
+        // is 125 ms on a 240 tps recording but 25 ms on a 1200 tps one.
+        const double off = std::abs(bestDelta);
+        const int ms = int(std::lround(off * 1000.0));
+        const char* sign = bestDelta > 0 ? "+" : "-";
 
-        const ccColor4F col = verdictColour(off, L.perfectFrames, L.okFrames);
+        const ccColor4F col = verdictColour(off, L.perfectSec, L.okSec);
         flash(col);
-        if (off <= L.perfectFrames) {
+        if (off <= L.perfectSec) {
             ++f->nPerfect;
             if (L.showAccuracy) setVerdict(fmt::format("{}PERFECT", who), toC3B(col));
-        } else if (off <= L.okFrames) {
+        } else if (off <= L.okSec) {
             ++f->nOk;
-            if (L.showAccuracy) setVerdict(fmt::format("{}OK {}{}f", who, sign, off), toC3B(col));
+            if (L.showAccuracy) setVerdict(fmt::format("{}OK {}{}ms", who, sign, ms), toC3B(col));
         } else {
             ++f->nMiss;
-            if (L.showAccuracy) setVerdict(fmt::format("{}MISS {}{}f", who, sign, off), toC3B(col));
+            if (L.showAccuracy) setVerdict(fmt::format("{}MISS {}{}ms", who, sign, ms), toC3B(col));
         }
     }
 
@@ -1151,7 +1745,7 @@ class $modify(IndicatorLayer, PlayLayer) {
             } else if (!f->judged[f->missCursor]) {
                 f->judged[f->missCursor] = 1;
                 ++f->nMiss;
-                const ccColor4F mc = verdictColour(9999, L.perfectFrames, L.okFrames);
+                const ccColor4F mc = verdictColour(1e9, L.perfectSec, L.okSec);
                 flash(mc);
                 if (L.showAccuracy)
                     setVerdict(f->holds[f->missCursor].player2 ? "P2 MISS" : "MISS",
@@ -1225,7 +1819,7 @@ class $modify(IndicatorLayer, PlayLayer) {
         // so it waits for the real timeline.
         while (f->posClock
                && f->cursor < f->holds.size()
-               && xAt(double(f->holds[f->cursor].end) / f->fps) < viewL)
+               && xRel(double(f->holds[f->cursor].end) / f->fps, now, px) < viewL)
             ++f->cursor;
 
         int drawnCount = 0;
@@ -1239,8 +1833,8 @@ class $modify(IndicatorLayer, PlayLayer) {
             const double t1 = double(h.end) / f->fps;
             if (t0 - now > L.ahead) break;
 
-            const float x0 = xAt(t0);
-            const float x1 = xAt(t1);
+            const float x0 = xRel(t0, now, px);
+            const float x1 = xRel(t1, now, px);
             if (std::max(x1, x0) < viewL) continue;
 
             const ccColor4F c = h.player2 ? L.p2 : L.indicator;
@@ -1322,8 +1916,16 @@ class $modify(IndicatorLayer, PlayLayer) {
         const float dia   = colW * 0.86f;          // outer, including the white rim
         const float inner = dia * 0.84f;           // the coloured part
         const float hitY  = win.height * 0.10f + dia * 0.5f;
-        const float topY  = hitY + (L.laneMiddle ? win.width * 0.88f
-                                                 : win.height * 0.80f) * k;
+        // Middle is laid out standing up and then turned on its side, so its
+        // LENGTH becomes horizontal. It has to fit in whatever is left between
+        // the hit line and the far edge of the screen, or the far end of the
+        // ladder runs off screen and the oldest notes are invisible. That was
+        // already happening at the old fixed 0.88 of screen width, and moving
+        // the hit line towards the centre would have made it far worse.
+        const float midRoom = std::max(60.f, win.width * (1.f - L.midHit) - 24.f);
+        const float topY  = hitY + (L.laneMiddle
+                                    ? std::min(midRoom, win.width * 0.88f * k)
+                                    : win.height * 0.80f * k);
         const float span  = topY - hitY;
         const ccColor4F WHITE = { 1.f, 1.f, 1.f, 0.95f };
 
@@ -1336,8 +1938,21 @@ class $modify(IndicatorLayer, PlayLayer) {
         f->lbSet = true;
 
         auto lY = [&](float y) { return L.flipLane ? win.height - y : y; };
-        if (f->verdict) f->verdict->setPosition({ left + total * .5f, lY(hitY - dia * 0.9f) });
-        if (f->tally)   f->tally->setPosition({ left + total * .5f, lY(hitY - dia * 1.25f) });
+        // The labels are children of the play layer, not of the lane, so they
+        // are placed in screen space. For the upright lane the lane's own
+        // coordinates happen to be screen coordinates and this works. For
+        // Middle the lane gets rotated a quarter turn underneath them, so the
+        // same numbers put the score off in a corner: place it against the
+        // band's real screen position instead, centred and just below it.
+        if (L.laneMiddle) {
+            const float band = total;
+            const float bandBot = win.height - win.height * 0.025f - band;
+            if (f->verdict) f->verdict->setPosition({ win.width * .5f, bandBot - 14.f });
+            if (f->tally)   f->tally->setPosition({ win.width * .5f, bandBot - 32.f });
+        } else {
+            if (f->verdict) f->verdict->setPosition({ left + total * .5f, lY(hitY - dia * 0.9f) });
+            if (f->tally)   f->tally->setPosition({ left + total * .5f, lY(hitY - dia * 1.25f) });
+        }
         if (!L.showLane) return;
 
         // dark shaft with a bright rule down each outer edge
@@ -1348,7 +1963,7 @@ class $modify(IndicatorLayer, PlayLayer) {
 
         f->noteAtLine = false;
 
-        const double perfSec = double(L.perfectFrames) / f->fps;
+        const double perfSec = L.perfectSec;
         auto yOfT = [&](double t) { return hitY + float((t - now) / L.laneWindow) * span; };
 
         // one unbroken ring, chords stepped all the way round with no gaps
@@ -1472,7 +2087,7 @@ class $modify(IndicatorLayer, PlayLayer) {
 
         f->noteAtLine = false;
 
-        const double perfSec = double(L.perfectFrames) / f->fps;
+        const double perfSec = L.perfectSec;
         auto yOfT = [&](double t) { return hitY + float((t - now) / L.laneWindow) * span; };
 
         int seen = 0;
@@ -1615,8 +2230,8 @@ class $modify(IndicatorLayer, PlayLayer) {
 
         // green zone bands under the notes, real windows not vibes
         // sized off the actual perfect/ok frame settings
-        const double perfSec = double(L.perfectFrames) / f->fps;
-        const double okSec   = double(L.okFrames) / f->fps;
+        const double perfSec = L.perfectSec;
+        const double okSec   = L.okSec;
         auto yForSec = [&](double sec) { return yOf(scaleAt(sec / L.laneWindow)); };
         {
             ccColor4F okBand = L.lane;
@@ -1909,7 +2524,7 @@ public:
         }
 
         if (entries.empty()) {
-            m_info->setString("No .gdr2 files in the macros folder");
+            m_info->setString("No macros in the folder (.gdr2 .gdr .xd .slc)");
         } else {
             auto it = std::find_if(entries.begin(), entries.end(),
                                    [&](MacroEntry const& e) { return e.file == picked; });
@@ -1939,15 +2554,16 @@ public:
         auto l = layer();
         if (!l) return;
 
-        // spike first: it needs nothing from the player and is exact
-        if (l->canSpikeAlign()) {
-            const int off = l->alignToSpike();
+        // Several clicks beat one, so use the rhythm whenever there is one.
+        if (l->canPatternAlign()) {
+            const int off = l->alignByPattern();
             if (off != INT_MIN) {
                 clearLabels();
                 refresh();
                 FLAlertLayer::create("Align",
-                    "Set the macro to start at the level's anticheat spike. "
-                    "The first click lands wherever it falls after that.",
+                    "Matched the rhythm of your clicks against the macro and "
+                    "locked it on.\n\nThis is the one to use after a start "
+                    "position: play the section through once, then hit Align.",
                     "OK")->show();
                 return;
             }
@@ -1956,9 +2572,12 @@ public:
         if (!l->canAlign()) {
             FLAlertLayer::create(
                 "Align",
-                "This macro does not start on the anticheat spike, so Align "
-                "needs one real click from you instead. Press once, then come "
-                "back and hit Align again.",
+                "Align needs real clicks from you first. Play the section "
+                "through once, then come back and hit Align.\n\nA macro "
+                "recorded from the start of a level usually needs none of "
+                "this: it lines up on its own. Align is for start positions "
+                "in a part of the level you have never played through, where "
+                "the mod has to estimate how far in you are.",
                 "OK")->show();
             return;
         }
@@ -1966,7 +2585,9 @@ public:
         if (off == INT_MIN) {
             FLAlertLayer::create("Align",
                 "Could not align. Your click and the macro's first press were "
-                "too far apart to be the same one.", "OK")->show();
+                "too far apart to be the same one. Try playing a few seconds "
+                "of the section first, so Align has a rhythm to match.",
+                "OK")->show();
             return;
         }
         clearLabels();
@@ -2009,13 +2630,45 @@ public:
         refresh();
     }
 
-    void onImport(CCObject*) {
-        // Geode implements openFolder on android too, through a JNI call into
-        // the launcher, and hands back whether it actually opened. So just try
-        // it everywhere and only fall back to showing the path if the launcher
-        // could not do it.
-        const bool opened = geode::utils::file::openFolder(macroDir());
+    // Copy one picked file into the macros folder without clobbering anything
+    // already in there. Returns the name it was saved as, or empty on failure.
+    static std::string adoptMacro(std::filesystem::path const& src) {
+        auto name = src.filename();
+        if (name.empty()) return {};
 
+        // The android picker cannot filter by extension, so whatever comes
+        // back may not even be a macro. Parsing it is the real test, and it
+        // also means a correct file with an odd extension still gets in.
+        if (!fmts::knownExtension(name.extension().string()))
+            name += ".gdr2";
+
+        std::error_code ec;
+        auto dest = macroDir() / name;
+        for (int n = 2; std::filesystem::exists(dest, ec) && n < 100; ++n) {
+            auto stem = name.stem().string() + " (" + std::to_string(n) + ")";
+            dest = macroDir() / (stem + name.extension().string());
+        }
+
+        std::filesystem::copy_file(src, dest, ec);
+        if (ec) {
+            log::warn("could not copy {} in: {}", src.string(), ec.message());
+            return {};
+        }
+        return dest.filename().string();
+    }
+
+    void onImport(CCObject*) {
+#ifdef GEODE_IS_WINDOWS
+        // Windows can just open the folder, and that is the nicer answer there
+        // anyway: you can drop a whole batch in at once.
+        //
+        // It does not use the picker below for a dull reason. Geode's
+        // async::spawn, which is how a picker result gets back onto the main
+        // thread, crashes MSVC 14.44 outright with an internal compiler error,
+        // on both of its overloads and on a six line file that does nothing
+        // else. Nothing to route around in this mod, and openFolder already
+        // works here, so Windows keeps it.
+        const bool opened = geode::utils::file::openFolder(macroDir());
         if (opened) {
             FLAlertLayer::create(
                 "Import Macro",
@@ -2025,20 +2678,82 @@ public:
                 "OK")->show();
             return;
         }
-
         FLAlertLayer::create(this,
             "Import Macro",
-            ("Could not open the folder from here. Copy your <cg>.gdr2</c> / "
-             "<cg>.gdr</c> / <cg>.xd</c> / <cg>.slc</c> files in with a file "
-             "manager, then press <cy>Refresh</c>:\n\n<cl>"
+            ("Could not open the folder from here. Copy your macros in with a "
+             "file manager, then press <cy>Refresh</c>:\n\n<cl>"
              + macroDir().string() + "</c>"),
             "OK", "Copy Path")->show();
-    }
+#else
+        // Ask the system for the files rather than pointing at a folder. On
+        // android the macros folder lives inside the game's private storage,
+        // which a file manager cannot browse to, so handing someone the path
+        // was advice they could not act on. The picker is the only way in.
+        Ref<MacroPopup> self = this;
 
-    void FLAlert_Clicked(FLAlertLayer*, bool btn2) override {
-        if (!btn2) return;
-#if __has_include(<Geode/utils/general.hpp>)
-        geode::utils::clipboard::write(macroDir().string());
+        // Built as locals rather than inline: nesting the designated
+        // initialisers inside the call argument is its own compiler headache.
+        file::FilePickOptions::Filter filter;
+        filter.description = "Macros";
+        filter.files = { "*.gdr2", "*.gdr", "*.xd", "*.slc" };
+
+        file::FilePickOptions options;
+        options.filters = { filter };
+
+        geode::async::spawn(
+            file::pickMany(options),
+            [self](file::PickManyResult result) {
+                if (!result) {
+                    // Cancelling comes back as an empty list, not an error, so
+                    // reaching here means it genuinely could not run.
+                    log::warn("file picker failed: {}", result.unwrapErr());
+                    FLAlertLayer::create(
+                        "Import Macro",
+                        ("Could not open the file picker.\n\n<cy>"
+                         + result.unwrapErr() + "</c>").c_str(),
+                        "OK")->show();
+                    return;
+                }
+
+                const auto files = std::move(result).unwrap();
+                if (files.empty()) return;      // cancelled, say nothing
+
+                std::vector<std::string> added, rejected;
+                for (auto const& src : files) {
+                    const auto data = readFile(src);
+                    if (data.empty() || !fmts::parseAny(data)) {
+                        rejected.push_back(src.filename().string());
+                        continue;
+                    }
+                    auto saved = adoptMacro(src);
+                    if (saved.empty()) rejected.push_back(src.filename().string());
+                    else               added.push_back(std::move(saved));
+                }
+
+                for (auto const& a : added)    log::info("imported {}", a);
+                for (auto const& r : rejected) log::warn("not a macro, skipped: {}", r);
+
+                // The popup may have been closed while the picker was up.
+                if (self && self->getParent()) {
+                    self->clearLabels();
+                    self->refresh();
+                }
+
+                std::string msg;
+                if (!added.empty()) {
+                    msg = "Imported <cg>" + std::to_string(added.size())
+                        + "</c> macro" + (added.size() == 1 ? "" : "s") + ".";
+                    if (added.size() == 1) msg += "\n\n<cl>" + added[0] + "</c>";
+                }
+                if (!rejected.empty()) {
+                    if (!msg.empty()) msg += "\n\n";
+                    msg += "<cr>" + std::to_string(rejected.size()) + "</c> file"
+                         + (rejected.size() == 1 ? " was" : "s were")
+                         + " not a macro this mod can read and "
+                         + (rejected.size() == 1 ? "was" : "were") + " skipped.";
+                }
+                FLAlertLayer::create("Import Macro", msg.c_str(), "OK")->show();
+            });
 #endif
     }
 
