@@ -1,0 +1,34 @@
+# build output, one folder per platform
+build/
+build-*/
+out/
+
+# cmake leftovers if you ever configure in the project root by accident
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CMakeUserPresets.json
+*.cmake.stamp
+
+# the packaged mod itself, rebuildable from source
+*.geode
+*.lib
+*.dll
+*.so
+*.pdb
+*.exp
+*.obj
+
+# geode / editor cruft
+.cache/
+.vs/
+.vscode/
+.idea/
+compile_commands.json
+
+# windows
+Thumbs.db
+desktop.ini
+
+# macos
+.DS_Store

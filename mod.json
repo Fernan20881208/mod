@@ -1,0 +1,265 @@
+{
+    "geode": "5.9.0",
+    "gd": {
+        "win": "2.2081",
+        "mac": "2.2081",
+        "android": "2.2081",
+        "ios": "2.2081"
+    },
+    "id": "bogdoner.click-indicators",
+    "name": "Click Indicators",
+    "version": "v6.12.0",
+    "developers": [
+        "Bogdoner"
+    ],
+    "description": "Shows where a macro's clicks are, in the level and on a rhythm lane, instead of playing them. Reads .gdr2, .gdr and .xd (xdBot) and .slc (Silicate).",
+    "settings": {
+        "enabled": {
+            "name": "Master enable",
+            "description": "Turns the whole mod on or off. Applies immediately, no level reload.",
+            "type": "bool",
+            "default": true
+        },
+        "cheat-indicator": {
+            "name": "Flag as a cheat",
+            "description": "Reports to MegaHack, Eclipse and other cheat indicators while this mod is active. Needs the Cheat API mod installed.",
+            "type": "bool",
+            "default": true
+        },
+        "timing-offset": {
+            "name": "Timing offset (ms)",
+            "description": "Shifts every indicator. Negative makes them arrive earlier, positive later.",
+            "type": "int",
+            "default": 0,
+            "min": -2000,
+            "max": 2000
+        },
+        "look-ahead": {
+            "name": "Look ahead (seconds)",
+            "description": "How far into the future to show clicks in the level.",
+            "type": "float",
+            "default": 2.0,
+            "min": 0.5,
+            "max": 10.0
+        },
+        "max-notes": {
+            "name": "Max indicators on screen",
+            "description": "Hard cap on how many upcoming presses draw at once, in the level and in the lane. Dense macros bury the screen without this.",
+            "type": "int",
+            "default": 10,
+            "min": 1,
+            "max": 60
+        },
+        "color": {
+            "name": "Indicator colour",
+            "type": "rgb",
+            "default": "#35F07A"
+        },
+        "transparency": {
+            "name": "Indicator transparency (%)",
+            "description": "0 is fully solid, 100 is invisible.",
+            "type": "int",
+            "default": 80,
+            "min": 0,
+            "max": 100,
+            "control": {
+                "slider": true
+            }
+        },
+        "p2-color": {
+            "name": "Player 2 colour",
+            "description": "Used for the second input stream in dual macros. Ignored on single macros.",
+            "type": "rgb",
+            "default": "#FF63C9"
+        },
+        "p2-transparency": {
+            "name": "Player 2 transparency (%)",
+            "description": "0 is fully solid, 100 is invisible.",
+            "type": "int",
+            "default": 80,
+            "min": 0,
+            "max": 100,
+            "control": {
+                "slider": true
+            }
+        },
+        "line-width": {
+            "name": "Tap line thickness",
+            "description": "In level units. One block is 30. Holds use their real length instead.",
+            "type": "float",
+            "default": 4.0,
+            "min": 1.0,
+            "max": 20.0
+        },
+        "tap-ms": {
+            "name": "Tap threshold (ms)",
+            "description": "A press shorter than this draws as a tap, longer as a hold. In milliseconds, so it works on 240 tps and 1200 tps macros alike.",
+            "type": "int",
+            "default": 45,
+            "min": 5,
+            "max": 300
+        },
+        "edge-marker": {
+            "name": "Click marker on edge",
+            "description": "Draws a solid line on the leading edge of every indicator, which is the frame you press on.",
+            "type": "bool",
+            "default": true
+        },
+        "hold-tracks": {
+            "name": "Holds drain as you hold",
+            "description": "Once the press frame passes, the bar's leading edge follows you and the bar shrinks. What's left of it is how much hold is left.",
+            "type": "bool",
+            "default": true
+        },
+        "press-badge": {
+            "name": "Badge on the press edge",
+            "description": "A small hollow square riding the press edge of every indicator, level with your player. Easier to track than a full height line.",
+            "type": "bool",
+            "default": true
+        },
+        "player-square": {
+            "name": "Target square on player",
+            "description": "A square at your hitbox centre, matching the badges on the indicators. A badge sitting centred inside it is perfect timing.",
+            "type": "bool",
+            "default": true
+        },
+        "badge-size": {
+            "name": "Badge size",
+            "description": "Width of the square on the press edge, in screen units. It stays this size no matter how far the level zooms out.",
+            "type": "float",
+            "default": 6.0,
+            "min": 2.0,
+            "max": 20.0
+        },
+        "player-line": {
+            "name": "Show line on player",
+            "description": "Draws a line through your icon. An indicator touching it is the exact frame the macro clicks.",
+            "type": "bool",
+            "default": true
+        },
+        "player-color": {
+            "name": "Player line colour",
+            "type": "rgb",
+            "default": "#FFFFFF"
+        },
+        "player-transparency": {
+            "name": "Player line transparency (%)",
+            "type": "int",
+            "default": 45,
+            "min": 0,
+            "max": 100,
+            "control": {
+                "slider": true
+            }
+        },
+        "lane": {
+            "name": "Show rhythm lane",
+            "description": "A ladder at the edge of the screen. Upcoming presses are rungs that descend toward the hit bar, which flashes green on a hit and red on a miss.",
+            "type": "bool",
+            "default": true
+        },
+        "lane-side": {
+            "name": "Lane side",
+            "type": "string",
+            "default": "Left",
+            "one-of": [
+                "Left",
+                "Right",
+                "Middle"
+            ],
+            "description": "Which edge the rhythm lane sits on. Middle lays it flat across the top of the screen instead, with notes running in sideways to a receptor at one end. Upside down lane swaps which end that is."
+        },
+        "lane-window": {
+            "name": "Lane window (seconds)",
+            "description": "How much time the ladder covers from top to hit line. Lower means faster, more precise notes.",
+            "type": "float",
+            "default": 1.2,
+            "min": 0.3,
+            "max": 6.0
+        },
+        "lane-scale": {
+            "name": "Ladder size",
+            "description": "Overall size of the ladder. 1.0 matches the reference proportions.",
+            "type": "float",
+            "default": 1.0,
+            "min": 0.4,
+            "max": 2.5
+        },
+        "lane-depth": {
+            "name": "Ladder perspective",
+            "description": "How hard the ladder tapers toward the top. Higher is a steeper vanishing point. 1.15 matches the reference.",
+            "type": "float",
+            "default": 1.15,
+            "min": 0.2,
+            "max": 4.0
+        },
+        "note-shape": {
+            "name": "Note shape",
+            "description": "Slab is the perspective ladder. Circle is a flat osu mania lane: dots for taps, grey capsules for holds, no perspective.",
+            "type": "string",
+            "default": "Slab",
+            "one-of": [
+                "Slab",
+                "Circle"
+            ]
+        },
+        "lane-flip": {
+            "name": "Upside down lane",
+            "description": "Flips the rhythm lane: notes travel upward into receptors at the top instead of falling downward. Works for both note shapes.",
+            "type": "bool",
+            "default": false
+        },
+        "lane-transparency": {
+            "name": "Lane transparency (%)",
+            "type": "int",
+            "default": 25,
+            "min": 0,
+            "max": 100,
+            "control": {
+                "slider": true
+            }
+        },
+        "p2-lane": {
+            "name": "Split lane for dual",
+            "description": "Widens the rhythm lane into two columns, player 1 left and player 2 right. Off puts both in one column, told apart by colour.",
+            "type": "bool",
+            "default": true
+        },
+        "accuracy": {
+            "name": "Score my clicks",
+            "description": "Rates every click you make against the macro and shows the verdict beside the lane.",
+            "type": "bool",
+            "default": true
+        },
+        "perfect-window": {
+            "name": "Perfect window (frames)",
+            "description": "Within this many frames of the macro counts as perfect. At 240 tps, 2 frames is 8 ms.",
+            "type": "int",
+            "default": 2,
+            "min": 0,
+            "max": 20
+        },
+        "ok-window": {
+            "name": "OK window (frames)",
+            "description": "Outside perfect but inside this counts as OK. Beyond it is a miss.",
+            "type": "int",
+            "default": 8,
+            "min": 1,
+            "max": 60
+        }
+    },
+    "dependencies": {
+        "legowiifun.cheat_api": {
+            "version": ">=1.2.3",
+            "required": true
+        }
+    },
+    "resources": {
+        "files": [
+            "resources/hitcircle2x.png",
+            "resources/taikohitcircle.png",
+            "resources/taikohitcircleoverlay.png",
+            "resources/sliderfollowcircle.png"
+        ]
+    }
+}
