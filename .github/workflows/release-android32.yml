@@ -10,6 +10,7 @@ on:
       - 'src/**'
       - 'CMakeLists.txt'
       - 'resources/**'
+      - 'logo.png'
   workflow_dispatch:
 
 permissions:
@@ -40,6 +41,8 @@ jobs:
           set -euo pipefail
           OUT="${{ steps.geode_build.outputs.build-output }}"
           GEODE="$(find "$OUT" -maxdepth 1 -name '*.geode' -print -quit)"
+          VERSION="$(jq -r '.version' mod.json)"
+
           test -n "$GEODE"
           test -f "$GEODE"
           unzip -t "$GEODE"
@@ -55,14 +58,13 @@ jobs:
 
           file "$SO" | tee android32-binary.txt
           grep -Eq 'ELF 32-bit.*ARM' android32-binary.txt
-
           readelf -h "$SO" | tee android32-elf-header.txt
           grep -Eq 'Class:[[:space:]]+ELF32' android32-elf-header.txt
           grep -Eq 'Machine:[[:space:]]+ARM' android32-elf-header.txt
 
-          jq -e '
+          jq -e --arg version "$VERSION" '
             .id == "bogdoner.click-indicators" and
-            .version == "v7.4.1" and
+            .version == $version and
             .geode == "5.10.1" and
             .gd.android == "2.2081"
           ' verify-android32/mod.json >/dev/null
@@ -79,18 +81,19 @@ jobs:
       - name: Prepare release notes
         shell: bash
         run: |
-          cat > RELEASE_NOTES.md <<'EOF'
-          Click Indicators v7.4.1 for Geometry Dash 2.2081 on 32-bit Android.
+          set -euo pipefail
+          VERSION="$(jq -r '.version' mod.json)"
+          cat > RELEASE_NOTES.md <<EOF
+          Click Indicators ${VERSION} for Geometry Dash 2.2081 on 32-bit Android.
 
           - Geode SDK 5.10.1
           - Android32 / armeabi-v7a
           - Release build with LTO
-          - Package integrity checked with `unzip -t`
-          - `mod.json` verified as Click Indicators v7.4.1 for Geode 5.10.1 and GD Android 2.2081
-          - Native `bogdoner.click-indicators.android32.so` verified as ELF32 ARM
-          - Workflow rejects an accidental Android64 binary
+          - Package integrity and metadata validated
+          - Native Android32 binary verified as ELF32 ARM
+          - Includes the current feature set from main
 
-          If an older v7.4.0 copy is installed, remove it first and then install this file.
+          If an older copy is installed, remove/update it and install this file through Geode.
           EOF
 
       - name: Publish or replace Android32 release
@@ -99,21 +102,20 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          VERSION="$(jq -r '.version' mod.json)"
           if gh release view Android32 --repo "${{ github.repository }}" >/dev/null 2>&1; then
             gh release upload Android32 bogdoner.click-indicators.geode \
-              --repo "${{ github.repository }}" \
-              --clobber
+              --repo "${{ github.repository }}" --clobber
             gh release edit Android32 \
               --repo "${{ github.repository }}" \
-              --title "Android-32 v7.4.1" \
+              --title "Android-32 ${VERSION}" \
               --notes-file RELEASE_NOTES.md
           else
             gh release create Android32 bogdoner.click-indicators.geode \
               --repo "${{ github.repository }}" \
-              --title "Android-32 v7.4.1" \
+              --title "Android-32 ${VERSION}" \
               --notes-file RELEASE_NOTES.md \
-              --target main \
-              --latest=false
+              --target main --latest=false
           fi
 
       - name: Verify published release
@@ -122,16 +124,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          VERSION="$(jq -r '.version' mod.json)"
           gh release view Android32 --repo "${{ github.repository }}" --json tagName,name,assets \
             | tee published-android32.json
 
-          jq -e '
+          jq -e --arg name "Android-32 ${VERSION}" '
             .tagName == "Android32" and
-            .name == "Android-32 v7.4.1" and
+            .name == $name and
             ([.assets[] | select(.name == "bogdoner.click-indicators.geode")] | length) == 1
           ' published-android32.json >/dev/null
 
           LOCAL_SIZE="$(stat -c%s bogdoner.click-indicators.geode)"
           REMOTE_SIZE="$(jq -r '.assets[] | select(.name == "bogdoner.click-indicators.geode") | .size' published-android32.json)"
           test "$LOCAL_SIZE" = "$REMOTE_SIZE"
-          echo "Published asset size verified: $REMOTE_SIZE bytes"
+          echo "Published Android32 ${VERSION} asset verified: $REMOTE_SIZE bytes"
