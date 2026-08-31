@@ -6,6 +6,10 @@ on:
       - main
     paths:
       - '.github/workflows/release-android32.yml'
+      - 'mod.json'
+      - 'src/**'
+      - 'CMakeLists.txt'
+      - 'resources/**'
   workflow_dispatch:
 
 permissions:
@@ -38,6 +42,7 @@ jobs:
           GEODE="$(find "$OUT" -maxdepth 1 -name '*.geode' -print -quit)"
           test -n "$GEODE"
           test -f "$GEODE"
+          unzip -t "$GEODE"
 
           rm -rf verify-android32
           mkdir verify-android32
@@ -45,28 +50,88 @@ jobs:
 
           SO="verify-android32/bogdoner.click-indicators.android32.so"
           test -f "$SO"
+          test -f verify-android32/mod.json
+          test ! -e verify-android32/bogdoner.click-indicators.android64.so
+
           file "$SO" | tee android32-binary.txt
           grep -Eq 'ELF 32-bit.*ARM' android32-binary.txt
-          grep -q '"geode"[[:space:]]*:[[:space:]]*"5.10.1"' verify-android32/mod.json
+
+          readelf -h "$SO" | tee android32-elf-header.txt
+          grep -Eq 'Class:[[:space:]]+ELF32' android32-elf-header.txt
+          grep -Eq 'Machine:[[:space:]]+ARM' android32-elf-header.txt
+
+          jq -e '
+            .id == "bogdoner.click-indicators" and
+            .version == "v7.4.1" and
+            .geode == "5.10.1" and
+            .gd.android == "2.2081"
+          ' verify-android32/mod.json >/dev/null
 
           cp "$GEODE" bogdoner.click-indicators.geode
+          sha256sum bogdoner.click-indicators.geode | tee android32-sha256.txt
+
+          echo "=== VERIFIED ANDROID32 PACKAGE ==="
+          jq '{id, version, geode, gd}' verify-android32/mod.json
           ls -lh bogdoner.click-indicators.geode "$SO"
+          cat android32-binary.txt
+          cat android32-sha256.txt
 
-      - name: Publish Android32 release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: Android32
-          name: Android-32
-          target_commitish: main
-          body: |
-            Click Indicators v7.4.0 for Geometry Dash 2.2081 on 32-bit Android.
+      - name: Prepare release notes
+        shell: bash
+        run: |
+          cat > RELEASE_NOTES.md <<'EOF'
+          Click Indicators v7.4.1 for Geometry Dash 2.2081 on 32-bit Android.
 
-            - Geode SDK 5.10.1
-            - Android32 / armeabi-v7a
-            - Release build with LTO
-            - Native `bogdoner.click-indicators.android32.so` validated as 32-bit ARM
+          - Geode SDK 5.10.1
+          - Android32 / armeabi-v7a
+          - Release build with LTO
+          - Package integrity checked with `unzip -t`
+          - `mod.json` verified as Click Indicators v7.4.1 for Geode 5.10.1 and GD Android 2.2081
+          - Native `bogdoner.click-indicators.android32.so` verified as ELF32 ARM
+          - Workflow rejects an accidental Android64 binary
 
-            Install `bogdoner.click-indicators.geode` through Geode on a supported 32-bit Android installation.
-          files: bogdoner.click-indicators.geode
-          fail_on_unmatched_files: true
-          make_latest: false
+          If an older v7.4.0 copy is installed, remove it first and then install this file.
+          EOF
+
+      - name: Publish or replace Android32 release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view Android32 --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release upload Android32 bogdoner.click-indicators.geode \
+              --repo "${{ github.repository }}" \
+              --clobber
+            gh release edit Android32 \
+              --repo "${{ github.repository }}" \
+              --title "Android-32 v7.4.1" \
+              --notes-file RELEASE_NOTES.md
+          else
+            gh release create Android32 bogdoner.click-indicators.geode \
+              --repo "${{ github.repository }}" \
+              --title "Android-32 v7.4.1" \
+              --notes-file RELEASE_NOTES.md \
+              --target main \
+              --latest=false
+          fi
+
+      - name: Verify published release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release view Android32 --repo "${{ github.repository }}" --json tagName,name,assets \
+            | tee published-android32.json
+
+          jq -e '
+            .tagName == "Android32" and
+            .name == "Android-32 v7.4.1" and
+            ([.assets[] | select(.name == "bogdoner.click-indicators.geode")] | length) == 1
+          ' published-android32.json >/dev/null
+
+          LOCAL_SIZE="$(stat -c%s bogdoner.click-indicators.geode)"
+          REMOTE_SIZE="$(jq -r '.assets[] | select(.name == "bogdoner.click-indicators.geode") | .size' published-android32.json)"
+          test "$LOCAL_SIZE" = "$REMOTE_SIZE"
+          echo "Published asset size verified: $REMOTE_SIZE bytes"
