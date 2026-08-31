@@ -59,7 +59,7 @@ jobs:
           test ! -e verify-ios/bogdoner.click-indicators.dll
 
           file "$DYLIB" | tee ios-binary.txt
-          grep -Eq 'Mach-O 64-bit arm64' ios-binary.txt
+          grep -Eq 'Mach-O 64-bit.*arm64' ios-binary.txt
 
           jq -e --arg version "$VERSION" '
             .id == "bogdoner.click-indicators" and
@@ -103,9 +103,6 @@ jobs:
           set -euo pipefail
           VERSION="$(jq -r '.version' mod.json)"
           if gh release view iOS --repo "${{ github.repository }}" >/dev/null 2>&1; then
-            # The original iOS release used an uppercase asset name. GitHub asset
-            # names are case-sensitive, so remove it explicitly before uploading
-            # the canonical lowercase v7.5.0 package.
             gh release delete-asset iOS Bogdoner.click-indicators.geode \
               --repo "${{ github.repository }}" -y 2>/dev/null || true
             gh release upload iOS bogdoner.click-indicators.geode \
