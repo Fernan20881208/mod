@@ -1,0 +1,29 @@
+name: Build iOS
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-ios:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build Geode mod for iOS
+        uses: geode-sdk/build-geode-mod@main
+        with:
+          target: iOS
+          sdk: given
+
+      - name: Upload iOS build
+        uses: actions/upload-artifact@v4
+        with:
+          name: geode-ios
+          path: "**/*.geode"
