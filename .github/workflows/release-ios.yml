@@ -103,6 +103,11 @@ jobs:
           set -euo pipefail
           VERSION="$(jq -r '.version' mod.json)"
           if gh release view iOS --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            # The original iOS release used an uppercase asset name. GitHub asset
+            # names are case-sensitive, so remove it explicitly before uploading
+            # the canonical lowercase v7.5.0 package.
+            gh release delete-asset iOS Bogdoner.click-indicators.geode \
+              --repo "${{ github.repository }}" -y 2>/dev/null || true
             gh release upload iOS bogdoner.click-indicators.geode \
               --repo "${{ github.repository }}" --clobber
             gh release edit iOS \
@@ -130,7 +135,8 @@ jobs:
           jq -e --arg name "iOS ${VERSION} - Geode 5.10.1" '
             .tagName == "iOS" and
             .name == $name and
-            ([.assets[] | select(.name == "bogdoner.click-indicators.geode")] | length) == 1
+            ([.assets[] | select(.name == "bogdoner.click-indicators.geode")] | length) == 1 and
+            ([.assets[] | select(.name == "Bogdoner.click-indicators.geode")] | length) == 0
           ' published-ios.json >/dev/null
 
           LOCAL_SIZE="$(stat -f%z bogdoner.click-indicators.geode)"
