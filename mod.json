@@ -8,11 +8,11 @@
     },
     "id": "bogdoner.click-indicators",
     "name": "Click Indicators",
-    "version": "v7.4.1",
+    "version": "v7.5.0",
     "developers": [
         "Bogdoner"
     ],
-    "description": "Shows where a macro's clicks are, in the level and on a rhythm lane, instead of playing them. Reads .gdr2, .gdr and .xd (xdBot) and .slc (Silicate).",
+    "description": "Shows where a macro's clicks are, in the level and on a rhythm lane, instead of playing them. Includes accuracy score, perfect combo, hold progress, recent macros and macro tags. Reads .gdr2, .gdr and .xd (xdBot) and .slc (Silicate).",
     "requires-patching": false,
     "settings": {
         "enabled": {
@@ -236,7 +236,7 @@
         },
         "accuracy": {
             "name": "Score my clicks",
-            "description": "Rates every click you make against the macro and shows the verdict beside the lane.",
+            "description": "Rates every click you make against the macro and now also shows a live accuracy percentage and Perfect combo.",
             "type": "bool",
             "default": true
         },
