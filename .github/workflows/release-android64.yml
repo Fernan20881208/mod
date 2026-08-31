@@ -10,6 +10,7 @@ on:
       - 'src/**'
       - 'CMakeLists.txt'
       - 'resources/**'
+      - 'logo.png'
   workflow_dispatch:
 
 permissions:
@@ -40,6 +41,7 @@ jobs:
           set -euo pipefail
           OUT="${{ steps.geode_build.outputs.build-output }}"
           GEODE="$(find "$OUT" -maxdepth 1 -name '*.geode' -print -quit)"
+          VERSION="$(jq -r '.version' mod.json)"
 
           test -n "$GEODE"
           test -f "$GEODE"
@@ -56,14 +58,13 @@ jobs:
 
           file "$SO" | tee android64-binary.txt
           grep -Eq 'ELF 64-bit.*ARM aarch64' android64-binary.txt
-
           readelf -h "$SO" | tee android64-elf-header.txt
           grep -Eq 'Class:[[:space:]]+ELF64' android64-elf-header.txt
           grep -Eq 'Machine:[[:space:]]+AArch64' android64-elf-header.txt
 
-          jq -e '
+          jq -e --arg version "$VERSION" '
             .id == "bogdoner.click-indicators" and
-            .version == "v7.4.1" and
+            .version == $version and
             .geode == "5.10.1" and
             .gd.android == "2.2081"
           ' verify-android64/mod.json >/dev/null
@@ -80,18 +81,19 @@ jobs:
       - name: Prepare release notes
         shell: bash
         run: |
-          cat > RELEASE_NOTES.md <<'EOF'
-          Click Indicators v7.4.1 for Geometry Dash 2.2081 on 64-bit Android.
+          set -euo pipefail
+          VERSION="$(jq -r '.version' mod.json)"
+          cat > RELEASE_NOTES.md <<EOF
+          Click Indicators ${VERSION} for Geometry Dash 2.2081 on 64-bit Android.
 
           - Geode SDK 5.10.1
           - Android64 / arm64-v8a
           - Release build with LTO
-          - Package integrity checked with `unzip -t`
-          - `mod.json` verified as Click Indicators v7.4.1 for Geode 5.10.1 and GD Android 2.2081
-          - Native `bogdoner.click-indicators.android64.so` verified as ELF64 AArch64
-          - Workflow rejects an accidental Android32 binary
+          - Package integrity and metadata validated
+          - Native Android64 binary verified as ELF64 AArch64
+          - Includes the current feature set from main
 
-          If an older v7.4.0 copy is installed, remove it first and then install this file.
+          If an older copy is installed, remove/update it and install this file through Geode.
           EOF
 
       - name: Replace Android64 release asset
@@ -100,13 +102,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          VERSION="$(jq -r '.version' mod.json)"
           gh release view Android --repo "${{ github.repository }}" >/dev/null
           gh release upload Android bogdoner.click-indicators.geode \
-            --repo "${{ github.repository }}" \
-            --clobber
+            --repo "${{ github.repository }}" --clobber
           gh release edit Android \
             --repo "${{ github.repository }}" \
-            --title "Android-64 v7.4.1" \
+            --title "Android-64 ${VERSION}" \
             --notes-file RELEASE_NOTES.md
 
       - name: Verify published release
@@ -115,16 +117,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          VERSION="$(jq -r '.version' mod.json)"
           gh release view Android --repo "${{ github.repository }}" --json tagName,name,assets \
             | tee published-android64.json
 
-          jq -e '
+          jq -e --arg name "Android-64 ${VERSION}" '
             .tagName == "Android" and
-            .name == "Android-64 v7.4.1" and
+            .name == $name and
             ([.assets[] | select(.name == "bogdoner.click-indicators.geode")] | length) == 1
           ' published-android64.json >/dev/null
 
           LOCAL_SIZE="$(stat -c%s bogdoner.click-indicators.geode)"
           REMOTE_SIZE="$(jq -r '.assets[] | select(.name == "bogdoner.click-indicators.geode") | .size' published-android64.json)"
           test "$LOCAL_SIZE" = "$REMOTE_SIZE"
-          echo "Published asset size verified: $REMOTE_SIZE bytes"
+          echo "Published Android64 ${VERSION} asset verified: $REMOTE_SIZE bytes"
