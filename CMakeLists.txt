@@ -11,10 +11,11 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-project(ClickIndicators VERSION 1.0.0 LANGUAGES C CXX)
+project(ClickIndicators VERSION 7.5.0 LANGUAGES C CXX)
 
 add_library(${PROJECT_NAME} SHARED
     src/main.cpp
+    src/feature_pack.cpp
 )
 
 # Keep iOS explicitly arm64 even if this project is built outside the official
