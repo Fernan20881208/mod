@@ -1,5 +1,5 @@
 {
-    "geode": "5.9.0",
+    "geode": "5.10.1",
     "gd": {
         "win": "2.2081",
         "mac": "2.2081",
@@ -13,6 +13,7 @@
         "Bogdoner"
     ],
     "description": "Shows where a macro's clicks are, in the level and on a rhythm lane, instead of playing them. Reads .gdr2, .gdr and .xd (xdBot) and .slc (Silicate).",
+    "requires-patching": false,
     "settings": {
         "enabled": {
             "name": "Master enable",
@@ -259,7 +260,7 @@
     "dependencies": {
         "legowiifun.cheat_api": {
             "version": ">=1.2.3",
-            "required": true
+            "required": false
         }
     },
     "resources": {
