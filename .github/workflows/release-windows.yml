@@ -6,6 +6,11 @@ on:
       - main
     paths:
       - '.github/workflows/release-windows.yml'
+      - 'mod.json'
+      - 'CMakeLists.txt'
+      - 'src/**'
+      - 'resources/**'
+      - 'logo.png'
   workflow_dispatch:
 
 permissions:
@@ -60,6 +65,7 @@ jobs:
 
           $meta = Get-Content 'verify-windows64/mod.json' -Raw | ConvertFrom-Json
           if ($meta.id -ne 'bogdoner.click-indicators') { throw 'Wrong mod ID.' }
+          if ($meta.version -ne 'v7.4.1') { throw "Wrong mod version: $($meta.version)" }
           if ($meta.geode -ne '5.10.1') { throw 'Wrong Geode version.' }
           if ($meta.gd.win -ne '2.2081') { throw 'Wrong Geometry Dash Windows version.' }
 
@@ -70,22 +76,24 @@ jobs:
           "SHA256=$hash"
           "Package size=$packageSize bytes"
           "DLL size=$dllSize bytes"
+          "Metadata=v7.4.1 / Geode 5.10.1 / GD 2.2081"
           "PE machine=AMD64 (0x8664), PE32+"
 
       - name: Prepare release notes
         shell: pwsh
         run: |
           @'
-          Click Indicators v7.4.0 for Geometry Dash 2.2081 on 64-bit Windows.
+          Click Indicators v7.4.1 for Geometry Dash 2.2081 on 64-bit Windows.
 
           - Geode SDK 5.10.1
           - Windows 64-bit / x86-64
           - Release build with LTO
           - Package extracted and metadata validated
+          - `mod.json` verified as Click Indicators v7.4.1 for Geode 5.10.1 and GD Windows 2.2081
           - Native `bogdoner.click-indicators.dll` verified as PE32+ AMD64
           - Workflow rejects Android/iOS binaries accidentally bundled into the Windows package
 
-          Install `bogdoner.click-indicators.geode` through Geode on a supported 64-bit Windows installation.
+          If an older v7.4.0 copy is installed, remove it first and then install this file.
           '@ | Set-Content -Path 'RELEASE_NOTES.md' -Encoding UTF8
 
       - name: Publish or replace Windows64 release
@@ -98,11 +106,11 @@ jobs:
           if ($LASTEXITCODE -eq 0) {
             gh release upload Windows 'bogdoner.click-indicators.geode' --repo '${{ github.repository }}' --clobber
             if ($LASTEXITCODE -ne 0) { throw 'Failed to replace Windows release asset.' }
-            gh release edit Windows --repo '${{ github.repository }}' --title 'Windows-64' --notes-file 'RELEASE_NOTES.md'
+            gh release edit Windows --repo '${{ github.repository }}' --title 'Windows-64 v7.4.1' --notes-file 'RELEASE_NOTES.md'
             if ($LASTEXITCODE -ne 0) { throw 'Failed to update Windows release metadata.' }
           }
           else {
-            gh release create Windows 'bogdoner.click-indicators.geode' --repo '${{ github.repository }}' --title 'Windows-64' --notes-file 'RELEASE_NOTES.md' --target main --latest=false
+            gh release create Windows 'bogdoner.click-indicators.geode' --repo '${{ github.repository }}' --title 'Windows-64 v7.4.1' --notes-file 'RELEASE_NOTES.md' --target main --latest=false
             if ($LASTEXITCODE -ne 0) { throw 'Failed to create Windows release.' }
           }
 
@@ -114,9 +122,9 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $json = gh release view Windows --repo '${{ github.repository }}' --json tagName,name,assets | ConvertFrom-Json
           if ($json.tagName -ne 'Windows') { throw 'Published release has wrong tag.' }
-          if ($json.name -ne 'Windows-64') { throw 'Published release has wrong name.' }
+          if ($json.name -ne 'Windows-64 v7.4.1') { throw 'Published release has wrong name.' }
           $assets = @($json.assets | Where-Object { $_.name -eq 'bogdoner.click-indicators.geode' })
           if ($assets.Count -ne 1) { throw "Expected exactly one Windows .geode asset; found $($assets.Count)." }
           $localSize = (Get-Item 'bogdoner.click-indicators.geode').Length
           if ([int64]$assets[0].size -ne [int64]$localSize) { throw 'Published asset size does not match verified local package.' }
-          "Published Windows64 asset verified: $localSize bytes"
+          "Published Windows64 v7.4.1 asset verified: $localSize bytes"
