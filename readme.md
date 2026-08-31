@@ -119,3 +119,11 @@ The level bars are drawn above the level, not inside it, and they refuse the col
 Nothing is drawn until the level has been scanned and the clock anchored, which is a frame or two at level load. A blank frame is better than a frame in the wrong place followed by a jump — especially on a level whose first click comes early enough for that jump to be confusing.
 
 The speed timeline is built once at load and never rebuilt while you play. When the mod learns something about the level mid-run it caches it for the next load rather than respacing bars you are in the middle of reading.
+
+## Support development ❤️
+
+If Click Indicators is useful to you and you want to support continued development, you can sponsor the project through **GitHub Sponsors**.
+
+[❤️ Sponsor on GitHub](https://github.com/sponsors/Fernan20881208)
+
+Supporting is completely optional. The mod and its public releases stay available whether you sponsor or not.
