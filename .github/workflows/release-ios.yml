@@ -1,0 +1,65 @@
+name: Publish iOS Release
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/release-ios.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release-ios:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build Click Indicators for iOS
+        id: geode_build
+        uses: geode-sdk/build-geode-mod@main
+        with:
+          target: iOS
+          sdk: given
+          build-config: Release
+
+      - name: Verify iOS package
+        shell: bash
+        run: |
+          set -euo pipefail
+          GEODE="${{ steps.geode_build.outputs.build-output }}"
+          test -f "$GEODE"
+          rm -rf verify-ios
+          mkdir verify-ios
+          unzip -q "$GEODE" -d verify-ios
+          test -f verify-ios/bogdoner.click-indicators.ios.dylib
+          file verify-ios/bogdoner.click-indicators.ios.dylib | tee ios-binary.txt
+          grep -q 'arm64' ios-binary.txt
+          grep -q '"geode"[[:space:]]*:[[:space:]]*"5.10.1"' verify-ios/mod.json
+          cp "$GEODE" bogdoner.click-indicators.geode
+
+      - name: Publish iOS release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: iOS
+          name: iOS - Geode 5.10.1
+          target_commitish: main
+          body: |
+            Click Indicators v7.4.0 port for Geometry Dash 2.2081 on iOS.
+
+            - Geode SDK 5.10.1
+            - Native iOS arm64 binary
+            - iOS 14+
+            - Compatible with Geode iOS / Helper JIT-less flow
+            - Cheat API is optional on iOS
+
+            Import `bogdoner.click-indicators.geode` in the Geode iOS Launcher, enable it, then regenerate/update the Helper before launching the game.
+          files: bogdoner.click-indicators.geode
+          fail_on_unmatched_files: true
+          make_latest: true
