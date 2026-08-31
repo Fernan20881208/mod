@@ -42,8 +42,8 @@ jobs:
           if (Test-Path 'verify-windows64') { Remove-Item 'verify-windows64' -Recurse -Force }
           Expand-Archive -Path 'verify-windows64.zip' -DestinationPath 'verify-windows64' -Force
 
-          $dll = Join-Path 'verify-windows64' 'bogdoner.click-indicators.win.dll'
-          if (-not (Test-Path $dll)) { throw 'Missing bogdoner.click-indicators.win.dll' }
+          $dll = Join-Path 'verify-windows64' 'bogdoner.click-indicators.dll'
+          if (-not (Test-Path $dll)) { throw 'Missing bogdoner.click-indicators.dll' }
           if (Test-Path 'verify-windows64/bogdoner.click-indicators.android32.so') { throw 'Android32 binary was accidentally bundled.' }
           if (Test-Path 'verify-windows64/bogdoner.click-indicators.android64.so') { throw 'Android64 binary was accidentally bundled.' }
           if (Test-Path 'verify-windows64/bogdoner.click-indicators.ios.dylib') { throw 'iOS binary was accidentally bundled.' }
@@ -82,7 +82,7 @@ jobs:
           - Windows 64-bit / x86-64
           - Release build with LTO
           - Package extracted and metadata validated
-          - Native `bogdoner.click-indicators.win.dll` verified as PE32+ AMD64
+          - Native `bogdoner.click-indicators.dll` verified as PE32+ AMD64
           - Workflow rejects Android/iOS binaries accidentally bundled into the Windows package
 
           Install `bogdoner.click-indicators.geode` through Geode on a supported 64-bit Windows installation.
