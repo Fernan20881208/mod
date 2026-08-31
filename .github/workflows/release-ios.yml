@@ -6,6 +6,11 @@ on:
       - main
     paths:
       - '.github/workflows/release-ios.yml'
+      - 'mod.json'
+      - 'src/**'
+      - 'CMakeLists.txt'
+      - 'resources/**'
+      - 'logo.png'
   workflow_dispatch:
 
 permissions:
@@ -28,38 +33,107 @@ jobs:
           target: iOS
           sdk: given
           build-config: Release
+          use-lto: true
 
       - name: Verify iOS package
         shell: bash
         run: |
           set -euo pipefail
-          GEODE="${{ steps.geode_build.outputs.build-output }}"
+          OUT="${{ steps.geode_build.outputs.build-output }}"
+          GEODE="$(find "$OUT" -maxdepth 1 -name '*.geode' -print -quit)"
+          VERSION="$(jq -r '.version' mod.json)"
+
+          test -n "$GEODE"
           test -f "$GEODE"
+          unzip -t "$GEODE"
+
           rm -rf verify-ios
           mkdir verify-ios
           unzip -q "$GEODE" -d verify-ios
-          test -f verify-ios/bogdoner.click-indicators.ios.dylib
-          file verify-ios/bogdoner.click-indicators.ios.dylib | tee ios-binary.txt
-          grep -q 'arm64' ios-binary.txt
-          grep -q '"geode"[[:space:]]*:[[:space:]]*"5.10.1"' verify-ios/mod.json
+
+          DYLIB="verify-ios/bogdoner.click-indicators.ios.dylib"
+          test -f "$DYLIB"
+          test -f verify-ios/mod.json
+          test ! -e verify-ios/bogdoner.click-indicators.android32.so
+          test ! -e verify-ios/bogdoner.click-indicators.android64.so
+          test ! -e verify-ios/bogdoner.click-indicators.dll
+
+          file "$DYLIB" | tee ios-binary.txt
+          grep -Eq 'Mach-O 64-bit arm64' ios-binary.txt
+
+          jq -e --arg version "$VERSION" '
+            .id == "bogdoner.click-indicators" and
+            .version == $version and
+            .geode == "5.10.1" and
+            .gd.ios == "2.2081"
+          ' verify-ios/mod.json >/dev/null
+
           cp "$GEODE" bogdoner.click-indicators.geode
+          shasum -a 256 bogdoner.click-indicators.geode | tee ios-sha256.txt
 
-      - name: Publish iOS release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: iOS
-          name: iOS - Geode 5.10.1
-          target_commitish: main
-          body: |
-            Click Indicators v7.4.0 port for Geometry Dash 2.2081 on iOS.
+          echo "=== VERIFIED IOS PACKAGE ==="
+          jq '{id, version, geode, gd}' verify-ios/mod.json
+          ls -lh bogdoner.click-indicators.geode "$DYLIB"
+          cat ios-binary.txt
+          cat ios-sha256.txt
 
-            - Geode SDK 5.10.1
-            - Native iOS arm64 binary
-            - iOS 14+
-            - Compatible with Geode iOS / Helper JIT-less flow
-            - Cheat API is optional on iOS
+      - name: Prepare release notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(jq -r '.version' mod.json)"
+          cat > RELEASE_NOTES.md <<EOF
+          Click Indicators ${VERSION} for Geometry Dash 2.2081 on iOS.
 
-            Import `bogdoner.click-indicators.geode` in the Geode iOS Launcher, enable it, then regenerate/update the Helper before launching the game.
-          files: bogdoner.click-indicators.geode
-          fail_on_unmatched_files: true
-          make_latest: true
+          - Geode SDK 5.10.1
+          - Native iOS arm64 binary
+          - iOS 14+
+          - Compatible with the Geode iOS / Helper JIT-less flow
+          - Includes iPhone landscape safe-area handling
+          - Includes the current feature set from main
+
+          Import bogdoner.click-indicators.geode in the Geode iOS Launcher, enable it, then regenerate/update the Helper before launching the game.
+          EOF
+
+      - name: Publish or replace iOS release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(jq -r '.version' mod.json)"
+          if gh release view iOS --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release upload iOS bogdoner.click-indicators.geode \
+              --repo "${{ github.repository }}" --clobber
+            gh release edit iOS \
+              --repo "${{ github.repository }}" \
+              --title "iOS ${VERSION} - Geode 5.10.1" \
+              --notes-file RELEASE_NOTES.md
+          else
+            gh release create iOS bogdoner.click-indicators.geode \
+              --repo "${{ github.repository }}" \
+              --title "iOS ${VERSION} - Geode 5.10.1" \
+              --notes-file RELEASE_NOTES.md \
+              --target main --latest=false
+          fi
+
+      - name: Verify published release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(jq -r '.version' mod.json)"
+          gh release view iOS --repo "${{ github.repository }}" --json tagName,name,assets \
+            | tee published-ios.json
+
+          jq -e --arg name "iOS ${VERSION} - Geode 5.10.1" '
+            .tagName == "iOS" and
+            .name == $name and
+            ([.assets[] | select(.name == "bogdoner.click-indicators.geode")] | length) == 1
+          ' published-ios.json >/dev/null
+
+          LOCAL_SIZE="$(stat -f%z bogdoner.click-indicators.geode)"
+          REMOTE_SIZE="$(jq -r '.assets[] | select(.name == "bogdoner.click-indicators.geode") | .size' published-ios.json)"
+          test "$LOCAL_SIZE" = "$REMOTE_SIZE"
+          echo "Published iOS ${VERSION} asset verified: $REMOTE_SIZE bytes"
