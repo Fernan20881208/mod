@@ -1,12 +1,32 @@
 cmake_minimum_required(VERSION 3.21)
+
+# iOS must be configured before project() so CMake selects the iPhone SDK and
+# only emits the arm64 slice Geometry Dash can load.
+if (CMAKE_SYSTEM_NAME STREQUAL "iOS" OR GEODE_TARGET_PLATFORM STREQUAL "iOS")
+    set(CMAKE_OSX_ARCHITECTURES "arm64" CACHE STRING "iOS architecture" FORCE)
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "14.0" CACHE STRING "Minimum supported iOS" FORCE)
+endif()
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-project(ClickIndicators VERSION 1.0.0)
+project(ClickIndicators VERSION 1.0.0 LANGUAGES C CXX)
 
 add_library(${PROJECT_NAME} SHARED
     src/main.cpp
 )
+
+# Keep iOS explicitly arm64 even if this project is built outside the official
+# Geode GitHub Action (for example from Xcode/CMake on a Mac).
+if (CMAKE_SYSTEM_NAME STREQUAL "iOS" OR GEODE_TARGET_PLATFORM STREQUAL "iOS")
+    set_target_properties(${PROJECT_NAME} PROPERTIES
+        OSX_ARCHITECTURES "arm64"
+        XCODE_ATTRIBUTE_ONLY_ACTIVE_ARCH "NO"
+        XCODE_ATTRIBUTE_IPHONEOS_DEPLOYMENT_TARGET "14.0"
+    )
+    target_compile_definitions(${PROJECT_NAME} PRIVATE CLICK_INDICATORS_IOS=1)
+endif()
 
 if (NOT DEFINED ENV{GEODE_SDK})
     message(FATAL_ERROR "Unable to find Geode SDK! Set the GEODE_SDK environment variable.")
