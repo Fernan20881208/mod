@@ -1,4 +1,4 @@
-name: Build iOS
+name: Build iOS Debug
 
 on:
   workflow_dispatch:
@@ -16,14 +16,39 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Build Geode mod for iOS
+      - name: Build Geode mod for iOS (Debug)
+        id: geode_build
         uses: geode-sdk/build-geode-mod@main
         with:
           target: iOS
           sdk: given
+          build-config: Debug
+          use-lto: false
+          export-debug: true
 
-      - name: Upload iOS build
+      - name: Show build sizes
+        shell: bash
+        run: |
+          echo "=== Geode output ==="
+          du -ah "${{ steps.geode_build.outputs.build-output }}" | sort -h | tail -30 || true
+          echo "=== Build directory ==="
+          du -ah build | sort -h | tail -30 || true
+
+      - name: Upload installable iOS Geode
         uses: actions/upload-artifact@v4
         with:
-          name: geode-ios
+          name: geode-ios-debug
           path: "**/*.geode"
+          compression-level: 0
+          if-no-files-found: error
+
+      - name: Upload full iOS debug build
+        uses: actions/upload-artifact@v4
+        with:
+          name: geode-ios-debug-full
+          path: |
+            ${{ steps.geode_build.outputs.build-output }}
+            build/**/*.dylib
+            build/**/*.dSYM/**
+          compression-level: 0
+          if-no-files-found: warn
