@@ -27,6 +27,14 @@ if (CMAKE_SYSTEM_NAME STREQUAL "iOS" OR GEODE_TARGET_PLATFORM STREQUAL "iOS")
         XCODE_ATTRIBUTE_IPHONEOS_DEPLOYMENT_TARGET "14.0"
     )
     target_compile_definitions(${PROJECT_NAME} PRIVATE CLICK_INDICATORS_IOS=1)
+
+    # Geode 5 removed CCARRAY_FOREACH. feature_pack.cpp has two iOS-only
+    # safe-area loops that still use the old spelling, so force-include a tiny
+    # compatibility shim after Geode's definition. This is intentionally iOS
+    # only and does not change Android or Windows compilation.
+    target_compile_options(${PROJECT_NAME} PRIVATE
+        -include "${CMAKE_CURRENT_SOURCE_DIR}/src/geode5_ios_compat.hpp"
+    )
 endif()
 
 if (NOT DEFINED ENV{GEODE_SDK})
