@@ -1,4 +1,4 @@
-name: Build iOS Debug
+name: Build iOS Helper Ready
 
 on:
   workflow_dispatch:
@@ -16,39 +16,102 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Build Geode mod for iOS (Debug)
+      - name: Pin Geode SDK 5.10.1 for iOS package
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          path = Path('mod.json')
+          data = json.loads(path.read_text())
+          data['geode'] = '5.10.1'
+          path.write_text(json.dumps(data, indent=4) + '\n')
+          print('Building', data['id'], 'for Geode', data['geode'])
+          PY
+
+      - name: Build Geode mod for iOS
         id: geode_build
         uses: geode-sdk/build-geode-mod@main
         with:
           target: iOS
           sdk: given
-          build-config: Debug
-          use-lto: false
-          export-debug: true
+          build-config: Release
+          use-lto: true
+          export-debug: false
 
-      - name: Show build sizes
+      - name: Verify iOS binary and prepare Helper payload
+        id: verify
         shell: bash
         run: |
-          echo "=== Geode output ==="
-          du -ah "${{ steps.geode_build.outputs.build-output }}" | sort -h | tail -30 || true
-          echo "=== Build directory ==="
-          du -ah build | sort -h | tail -30 || true
+          set -euo pipefail
 
-      - name: Upload installable iOS Geode
+          MOD_ID="$(python3 -c 'import json; print(json.load(open("mod.json"))["id"])')"
+          EXPECTED_BIN="${MOD_ID}.ios.dylib"
+          OUT="${{ steps.geode_build.outputs.build-output }}"
+          GEODE_FILE="$(find "$OUT" -type f -name '*.geode' -print -quit)"
+
+          if [ -z "$GEODE_FILE" ]; then
+            echo 'No .geode file was generated'
+            exit 1
+          fi
+
+          echo "Generated package: $GEODE_FILE"
+          unzip -l "$GEODE_FILE"
+
+          if ! unzip -Z1 "$GEODE_FILE" | grep -Fxq "$EXPECTED_BIN"; then
+            echo "ERROR: $EXPECTED_BIN is missing from the .geode package"
+            exit 1
+          fi
+
+          rm -rf helper-ready verify-geode
+          mkdir -p helper-ready/mods helper-ready/install verify-geode
+          unzip -q "$GEODE_FILE" -d verify-geode
+
+          test -s "verify-geode/$EXPECTED_BIN"
+          file "verify-geode/$EXPECTED_BIN"
+          lipo -info "verify-geode/$EXPECTED_BIN"
+
+          if ! lipo -info "verify-geode/$EXPECTED_BIN" 2>&1 | grep -q 'arm64'; then
+            echo 'ERROR: iOS dylib is not arm64'
+            exit 1
+          fi
+
+          cp "$GEODE_FILE" "helper-ready/install/${MOD_ID}.geode"
+          cp "verify-geode/$EXPECTED_BIN" "helper-ready/mods/$EXPECTED_BIN"
+          cp mod.json helper-ready/mod.json
+
+          cat > helper-ready/README.txt <<EOF
+          Click Indicators - Geode iOS Helper payload
+
+          Verified binary: $EXPECTED_BIN
+          Architecture: arm64
+          Geode SDK: 5.10.1
+
+          For normal installation, import install/${MOD_ID}.geode into the Geode iOS Launcher.
+          On JIT-less / Enterprise mode, the Launcher must then patch/update Helper.ipa so the
+          dylib is copied and signed into the Helper's mods binary directory.
+
+          Do not launch the old Helper after installing/enabling this mod. Generate and install
+          the updated Helper.ipa first, then launch it from the Geode Launcher.
+          EOF
+
+          echo "geode_file=$GEODE_FILE" >> "$GITHUB_OUTPUT"
+          echo "mod_id=$MOD_ID" >> "$GITHUB_OUTPUT"
+          echo '=== Helper-ready payload ==='
+          find helper-ready -type f -maxdepth 3 -print -exec du -h {} \;
+
+      - name: Upload installable iOS mod
         uses: actions/upload-artifact@v4
         with:
-          name: geode-ios-debug
-          path: "**/*.geode"
+          name: click-indicators-ios-geode-5.10.1
+          path: ${{ steps.verify.outputs.geode_file }}
           compression-level: 0
           if-no-files-found: error
 
-      - name: Upload full iOS debug build
+      - name: Upload Helper-ready payload
         uses: actions/upload-artifact@v4
         with:
-          name: geode-ios-debug-full
-          path: |
-            ${{ steps.geode_build.outputs.build-output }}
-            build/**/*.dylib
-            build/**/*.dSYM/**
+          name: click-indicators-ios-helper-ready
+          path: helper-ready/
           compression-level: 0
-          if-no-files-found: warn
+          if-no-files-found: error
