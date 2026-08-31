@@ -1,0 +1,129 @@
+name: Publish Android64 Release
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/release-android64.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release-android64:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build Click Indicators for Android64
+        id: geode_build
+        uses: geode-sdk/build-geode-mod@main
+        with:
+          target: Android64
+          sdk: given
+          build-config: Release
+          use-lto: true
+
+      - name: Verify Android64 package
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="${{ steps.geode_build.outputs.build-output }}"
+          GEODE="$(find "$OUT" -maxdepth 1 -name '*.geode' -print -quit)"
+
+          test -n "$GEODE"
+          test -f "$GEODE"
+          unzip -t "$GEODE"
+
+          rm -rf verify-android64
+          mkdir verify-android64
+          unzip -q "$GEODE" -d verify-android64
+
+          SO="verify-android64/bogdoner.click-indicators.android64.so"
+          test -f "$SO"
+          test -f verify-android64/mod.json
+
+          # There must not be a 32-bit binary accidentally bundled in this release.
+          test ! -e verify-android64/bogdoner.click-indicators.android32.so
+
+          file "$SO" | tee android64-binary.txt
+          grep -Eq 'ELF 64-bit.*ARM aarch64' android64-binary.txt
+
+          readelf -h "$SO" | tee android64-elf-header.txt
+          grep -Eq 'Class:[[:space:]]+ELF64' android64-elf-header.txt
+          grep -Eq 'Machine:[[:space:]]+AArch64' android64-elf-header.txt
+
+          jq -e '
+            .id == "bogdoner.click-indicators" and
+            .geode == "5.10.1" and
+            .gd.android == "2.2081"
+          ' verify-android64/mod.json >/dev/null
+
+          cp "$GEODE" bogdoner.click-indicators.geode
+          sha256sum bogdoner.click-indicators.geode | tee android64-sha256.txt
+
+          echo "=== VERIFIED ANDROID64 PACKAGE ==="
+          ls -lh bogdoner.click-indicators.geode "$SO"
+          cat android64-binary.txt
+          cat android64-sha256.txt
+
+      - name: Prepare release notes
+        shell: bash
+        run: |
+          cat > RELEASE_NOTES.md <<'EOF'
+          Click Indicators v7.4.0 for Geometry Dash 2.2081 on 64-bit Android.
+
+          - Geode SDK 5.10.1
+          - Android64 / arm64-v8a
+          - Release build with LTO
+          - Package integrity checked with `unzip -t`
+          - `mod.json` verified for mod ID, Geode 5.10.1 and GD Android 2.2081
+          - Native `bogdoner.click-indicators.android64.so` verified as ELF64 AArch64
+          - Workflow rejects an accidental Android32 binary
+
+          Install `bogdoner.click-indicators.geode` through Geode on a supported 64-bit Android installation.
+          EOF
+
+      - name: Replace Android64 release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # The Android release already exists. Replace its old asset atomically
+          # instead of creating a second release or leaving the old 12 MB build.
+          gh release view Android --repo "${{ github.repository }}" >/dev/null
+          gh release upload Android bogdoner.click-indicators.geode \
+            --repo "${{ github.repository }}" \
+            --clobber
+          gh release edit Android \
+            --repo "${{ github.repository }}" \
+            --title "Android-64" \
+            --notes-file RELEASE_NOTES.md
+
+      - name: Verify published release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release view Android --repo "${{ github.repository }}" --json tagName,name,assets \
+            | tee published-android64.json
+
+          jq -e '
+            .tagName == "Android" and
+            .name == "Android-64" and
+            ([.assets[] | select(.name == "bogdoner.click-indicators.geode")] | length) == 1
+          ' published-android64.json >/dev/null
+
+          LOCAL_SIZE="$(stat -c%s bogdoner.click-indicators.geode)"
+          REMOTE_SIZE="$(jq -r '.assets[] | select(.name == "bogdoner.click-indicators.geode") | .size' published-android64.json)"
+          test "$LOCAL_SIZE" = "$REMOTE_SIZE"
+          echo "Published asset size verified: $REMOTE_SIZE bytes"
