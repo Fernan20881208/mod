@@ -1,0 +1,72 @@
+name: Publish Android32 Release
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/release-android32.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release-android32:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build Click Indicators for Android32
+        id: geode_build
+        uses: geode-sdk/build-geode-mod@main
+        with:
+          target: Android32
+          sdk: given
+          build-config: Release
+          use-lto: true
+
+      - name: Verify Android32 package
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="${{ steps.geode_build.outputs.build-output }}"
+          GEODE="$(find "$OUT" -maxdepth 1 -name '*.geode' -print -quit)"
+          test -n "$GEODE"
+          test -f "$GEODE"
+
+          rm -rf verify-android32
+          mkdir verify-android32
+          unzip -q "$GEODE" -d verify-android32
+
+          SO="verify-android32/bogdoner.click-indicators.android32.so"
+          test -f "$SO"
+          file "$SO" | tee android32-binary.txt
+          grep -Eq 'ELF 32-bit.*ARM' android32-binary.txt
+          grep -q '"geode"[[:space:]]*:[[:space:]]*"5.10.1"' verify-android32/mod.json
+
+          cp "$GEODE" bogdoner.click-indicators.geode
+          ls -lh bogdoner.click-indicators.geode "$SO"
+
+      - name: Publish Android32 release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: Android32
+          name: Android-32
+          target_commitish: main
+          body: |
+            Click Indicators v7.4.0 for Geometry Dash 2.2081 on 32-bit Android.
+
+            - Geode SDK 5.10.1
+            - Android32 / armeabi-v7a
+            - Release build with LTO
+            - Native `bogdoner.click-indicators.android32.so` validated as 32-bit ARM
+
+            Install `bogdoner.click-indicators.geode` through Geode on a supported 32-bit Android installation.
+          files: bogdoner.click-indicators.geode
+          fail_on_unmatched_files: true
+          make_latest: false
