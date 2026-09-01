@@ -141,7 +141,7 @@ jobs:
         id: combine
         uses: geode-sdk/build-geode-mod/combine@main
         with:
-          zstd: true
+          zstd: false
           optimize-pngs: true
           delete-artifacts: true
 
