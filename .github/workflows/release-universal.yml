@@ -1,0 +1,253 @@
+name: Publish Universal Geode Release
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/release-universal.yml'
+      - 'mod.json'
+      - 'CMakeLists.txt'
+      - 'src/**'
+      - 'resources/**'
+      - 'logo.png'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  MOD_FILE: bogdoner.click-indicators.geode
+
+jobs:
+  build-win:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Build Win64 slice
+        uses: geode-sdk/build-geode-mod@main
+        with:
+          target: Win64
+          sdk: given
+          build-config: Release
+          use-lto: true
+          combine: true
+
+  build-android32:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Build Android32 slice
+        uses: geode-sdk/build-geode-mod@main
+        with:
+          target: Android32
+          sdk: given
+          build-config: Release
+          use-lto: true
+          combine: true
+
+  build-android64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Build Android64 slice
+        uses: geode-sdk/build-geode-mod@main
+        with:
+          target: Android64
+          sdk: given
+          build-config: Release
+          use-lto: true
+          combine: true
+
+  build-ios:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Build iOS slice
+        id: ios
+        uses: geode-sdk/build-geode-mod@main
+        with:
+          target: iOS
+          sdk: given
+          build-config: Release
+          use-lto: true
+          combine: true
+      - name: Verify iOS arm64 slice
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT='${{ steps.ios.outputs.build-output }}'
+          GEODE="$(find "$OUT" -maxdepth 1 -name '*.geode' -print -quit)"
+          rm -rf verify-ios-universal
+          mkdir verify-ios-universal
+          unzip -q "$GEODE" -d verify-ios-universal
+          test -f verify-ios-universal/bogdoner.click-indicators.ios.dylib
+          file verify-ios-universal/bogdoner.click-indicators.ios.dylib | tee ios-universal-slice.txt
+          grep -Eq 'Mach-O 64-bit.*arm64|Mach-O 64-bit dynamically linked shared library arm64' ios-universal-slice.txt
+
+  build-mac:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Build universal macOS slice
+        id: mac
+        uses: geode-sdk/build-geode-mod@main
+        with:
+          target: MacOS
+          sdk: given
+          build-config: Release
+          use-lto: true
+          combine: true
+          configure-args: '-DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"'
+      - name: Verify macOS fat binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT='${{ steps.mac.outputs.build-output }}'
+          GEODE="$(find "$OUT" -maxdepth 1 -name '*.geode' -print -quit)"
+          rm -rf verify-mac-universal
+          mkdir verify-mac-universal
+          unzip -q "$GEODE" -d verify-mac-universal
+          DYLIB=verify-mac-universal/bogdoner.click-indicators.dylib
+          test -f "$DYLIB"
+          ARCHS="$(lipo -archs "$DYLIB")"
+          echo "macOS architectures: $ARCHS"
+          echo "$ARCHS" | grep -qw arm64
+          echo "$ARCHS" | grep -qw x86_64
+
+  combine-and-release:
+    runs-on: ubuntu-latest
+    needs:
+      - build-win
+      - build-android32
+      - build-android64
+      - build-ios
+      - build-mac
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Combine platform packages
+        id: combine
+        uses: geode-sdk/build-geode-mod/combine@main
+        with:
+          zstd: true
+          optimize-pngs: true
+          delete-artifacts: true
+
+      - name: Verify universal package
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT='${{ steps.combine.outputs.build-output }}'
+          GEODE="$(find "$OUT" -maxdepth 1 -name '*.geode' -print -quit)"
+          VERSION="$(jq -r '.version' mod.json)"
+
+          test -n "$GEODE"
+          test -f "$GEODE"
+          unzip -t "$GEODE"
+
+          rm -rf verify-universal
+          mkdir verify-universal
+          unzip -q "$GEODE" -d verify-universal
+
+          test -f verify-universal/mod.json
+          test -f verify-universal/bogdoner.click-indicators.dll
+          test -f verify-universal/bogdoner.click-indicators.dylib
+          test -f verify-universal/bogdoner.click-indicators.ios.dylib
+          test -f verify-universal/bogdoner.click-indicators.android32.so
+          test -f verify-universal/bogdoner.click-indicators.android64.so
+
+          jq -e --arg version "$VERSION" '
+            .id == "bogdoner.click-indicators" and
+            .version == $version and
+            .geode == "5.10.1" and
+            .gd.win == "2.2081" and
+            .gd.mac == "2.2081" and
+            .gd.android == "2.2081" and
+            .gd.ios == "2.2081"
+          ' verify-universal/mod.json >/dev/null
+
+          file verify-universal/bogdoner.click-indicators.dll | tee universal-win.txt
+          file verify-universal/bogdoner.click-indicators.dylib | tee universal-mac.txt
+          file verify-universal/bogdoner.click-indicators.ios.dylib | tee universal-ios.txt
+          file verify-universal/bogdoner.click-indicators.android32.so | tee universal-android32.txt
+          file verify-universal/bogdoner.click-indicators.android64.so | tee universal-android64.txt
+
+          grep -Eqi 'PE32\+.*x86-64|PE32\+.*AMD64' universal-win.txt
+          grep -Eqi 'Mach-O.*(universal|arm64).*x86_64|Mach-O.*x86_64.*arm64' universal-mac.txt
+          grep -Eqi 'Mach-O.*arm64' universal-ios.txt
+          grep -Eqi 'ELF 32-bit.*ARM' universal-android32.txt
+          grep -Eqi 'ELF 64-bit.*(aarch64|ARM aarch64)' universal-android64.txt
+
+          cp "$GEODE" "$MOD_FILE"
+          sha256sum "$MOD_FILE" | tee universal-sha256.txt
+          stat -c '%s bytes' "$MOD_FILE" | tee universal-size.txt
+
+          echo '=== UNIVERSAL CONTENTS ==='
+          unzip -l "$MOD_FILE" | grep -E 'click-indicators\.(dll|dylib|ios\.dylib|android32\.so|android64\.so)|mod.json'
+
+      - name: Prepare release notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(jq -r '.version' mod.json)"
+          cat > RELEASE_NOTES.md <<EOF
+          Click Indicators ${VERSION} universal Geode package for Geometry Dash 2.2081.
+
+          One .geode file containing all currently supported platform binaries:
+          - Windows x86-64
+          - macOS universal: Apple Silicon arm64 + Intel x86_64
+          - Android 32-bit ARM
+          - Android 64-bit ARM64
+          - iOS arm64
+          - Linux / Steam Deck through Proton uses the included Windows x86-64 slice
+
+          Geode SDK: 5.10.1
+          Build: Release + LTO
+          Package merged with Geode's official multi-platform package merge flow.
+
+          Note: Geode 5.10.1 does not provide a native Linux Geometry Dash target, so Linux support is through Proton/Wine rather than a native Linux .so.
+          EOF
+
+      - name: Publish or replace Universal release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(jq -r '.version' mod.json)"
+          if gh release view Universal --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release upload Universal "$MOD_FILE" --repo "${{ github.repository }}" --clobber
+            gh release edit Universal --repo "${{ github.repository }}" --title "Universal ${VERSION}" --notes-file RELEASE_NOTES.md
+          else
+            gh release create Universal "$MOD_FILE" --repo "${{ github.repository }}" --title "Universal ${VERSION}" --notes-file RELEASE_NOTES.md --target main --latest=false
+          fi
+
+      - name: Verify published release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(jq -r '.version' mod.json)"
+          gh release view Universal --repo "${{ github.repository }}" --json tagName,name,assets | tee published-universal.json
+          jq -e --arg title "Universal ${VERSION}" '
+            .tagName == "Universal" and
+            .name == $title and
+            ([.assets[] | select(.name == "bogdoner.click-indicators.geode")] | length) == 1
+          ' published-universal.json >/dev/null
+          LOCAL_SIZE="$(stat -c%s "$MOD_FILE")"
+          REMOTE_SIZE="$(jq -r '.assets[] | select(.name == "bogdoner.click-indicators.geode") | .size' published-universal.json)"
+          test "$LOCAL_SIZE" = "$REMOTE_SIZE"
+          echo "Published universal ${VERSION} asset verified: ${REMOTE_SIZE} bytes"
