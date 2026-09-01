@@ -1,6 +1,73 @@
-# Click Indicators
+# Click Indicators — Enhanced Fork
 
 Shows you where a macro clicks instead of clicking for you. It never touches your input, so it is a practice and memory tool, not a bot.
+
+> [!IMPORTANT]
+> **This mod is not originally mine.** The original **Click Indicators** mod, its core concept, and the original codebase were created by **Bogdoner**. This repository is a fork built on top of that work. Full credit for the original mod belongs to Bogdoner.
+>
+> The sections below describe the additional changes, platform support, build system work, and features added in this fork.
+
+## About this fork
+
+This fork focuses on expanding Click Indicators to more platforms, modernizing its Geode compatibility, improving practice feedback, and providing verified release builds that are easier to install.
+
+Current fork version: **v7.5.0**  
+Geode SDK: **5.10.1**  
+Geometry Dash: **2.2081**
+
+### Changes added in this fork
+
+- Updated the project for **Geode 5.10.1**.
+- Added and verified **Android 32-bit ARM** builds.
+- Added and verified **Android 64-bit ARM64** builds.
+- Added and verified **Windows x86-64** builds.
+- Added **iOS arm64** support and release packaging.
+- Added iPhone **safe-area handling** to reduce overlap with the notch / Dynamic Island in landscape.
+- Added **macOS Apple Silicon arm64** builds.
+- Added **macOS Intel x86_64** builds.
+- Added a **macOS universal/fat build** containing both arm64 and x86_64.
+- Added a **Linux / Steam Deck Proton release** using the Windows x86-64 Geode binary, since Geode 5.10.1 does not currently provide a native Linux Geometry Dash target.
+- Added a single **Universal `.geode` package** that combines all supported platform binaries using Geode's official package merge flow.
+- Added automated GitHub Actions builds, package validation, architecture checks, and release verification.
+- Added automatic version reading from `mod.json` so release workflows do not need to be manually edited for every version bump.
+
+### Gameplay / UI features added in v7.5.0
+
+- **Live Accuracy Score** — displays your current input accuracy as a percentage.
+- **Perfect Combo** — tracks consecutive inputs inside the Perfect timing window and keeps the best combo for the attempt.
+- **Hold progress / gradient feedback** — holds visually communicate how much of the hold remains.
+- **iOS safe-area support** — UI placement is adjusted to better avoid iPhone display cutouts.
+- **Recent Macros** — keeps track of recently used macro files for quicker access.
+- **Macro Library organization** — macros can be organized with virtual folders / tags such as `Unsorted`, `Practice`, `Favorite`, and `Archive`.
+
+## Universal build
+
+The **Universal** release contains all currently supported binaries inside one `.geode` file:
+
+- Windows — x86-64
+- macOS — universal arm64 + x86_64
+- Android — ARM 32-bit
+- Android — ARM64 64-bit
+- iOS — arm64
+- Linux / Steam Deck — through Proton/Wine using the included Windows x86-64 binary
+
+You can find platform-specific builds and the universal package in the repository's **Releases** section.
+
+## Credits
+
+### Original project
+
+**Bogdoner** — original Click Indicators developer, original concept, core implementation, and original codebase.
+
+This fork does **not** claim ownership of the original mod. It only documents and distributes the modifications made on top of the original project.
+
+### Fork / modifications
+
+Additional platform ports, release workflows, compatibility updates, universal packaging, and v7.5.0 fork features were added in this fork.
+
+**Instagram:** [@Zaid.nvr](https://www.instagram.com/zaid.nvr/)
+
+---
 
 Presses appear in the level as vertical bars, and fall down a rhythm lane at the edge of the screen. Every click you make gets scored against the macro.
 
@@ -32,7 +99,6 @@ You can always override all of this: pause, open the macro list, and hit Load on
 ### Nothing showing up
 
 Check the log at `Geometry Dash\geode\logs`. On opening a level the mod prints every file it read, what level each one claims, and if nothing matched, the full list of what is in the folder. That tells you straight away whether it is a folder problem, a parse problem, or a naming problem.
-
 
 ### Macros that lie about their framerate
 
@@ -88,7 +154,7 @@ Every press is matched to the nearest macro press that has not been answered yet
 - **OK** — outside that but within the OK window, shown with how many milliseconds early or late you were
 - **MISS** — too far off, or a macro press you never answered
 
-The tally under the verdict is perfect / OK / miss for the attempt.
+The tally under the verdict is perfect / OK / miss for the attempt. This fork also adds a live **accuracy percentage** and **Perfect combo** tracking.
 
 Windows are set in milliseconds rather than frames, so they mean the same thing on a 60 tps recording and a 1200 tps one.
 
@@ -122,8 +188,10 @@ The speed timeline is built once at load and never rebuilt while you play. When 
 
 ## Support development ❤️
 
-If Click Indicators is useful to you and you want to support continued development, you can sponsor the project through **GitHub Sponsors**.
+If this fork is useful to you and you want to support continued work on the fork, you can sponsor the project through **GitHub Sponsors**.
 
 [❤️ Sponsor on GitHub](https://github.com/sponsors/Fernan20881208)
 
 Supporting is completely optional. The mod and its public releases stay available whether you sponsor or not.
+
+Please remember that sponsorship of this fork does not transfer ownership or authorship of the original Click Indicators project; original credit remains with **Bogdoner**.
