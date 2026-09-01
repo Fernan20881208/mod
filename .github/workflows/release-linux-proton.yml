@@ -1,0 +1,132 @@
+name: Publish Linux Proton Release
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/release-linux-proton.yml'
+      - 'mod.json'
+      - 'CMakeLists.txt'
+      - 'src/**'
+      - 'resources/**'
+      - 'logo.png'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release-linux-proton:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build Click Indicators for Proton
+        id: geode_build
+        uses: geode-sdk/build-geode-mod@main
+        with:
+          target: Win64
+          sdk: given
+          build-config: Release
+          use-lto: true
+
+      - name: Verify Proton package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $sourceMeta = Get-Content 'mod.json' -Raw | ConvertFrom-Json
+          $expectedVersion = $sourceMeta.version
+          $out = '${{ steps.geode_build.outputs.build-output }}'
+          $geode = Get-ChildItem -Path $out -Filter '*.geode' -File | Select-Object -First 1
+          if (-not $geode) { throw 'No .geode package was produced.' }
+
+          Copy-Item $geode.FullName 'verify-linux-proton.zip' -Force
+          if (Test-Path 'verify-linux-proton') { Remove-Item 'verify-linux-proton' -Recurse -Force }
+          Expand-Archive -Path 'verify-linux-proton.zip' -DestinationPath 'verify-linux-proton' -Force
+
+          $dll = Join-Path 'verify-linux-proton' 'bogdoner.click-indicators.dll'
+          if (-not (Test-Path $dll)) { throw 'Missing Windows x86-64 DLL required by Proton.' }
+          if (Test-Path 'verify-linux-proton/bogdoner.click-indicators.android32.so') { throw 'Android32 binary was accidentally bundled.' }
+          if (Test-Path 'verify-linux-proton/bogdoner.click-indicators.android64.so') { throw 'Android64 binary was accidentally bundled.' }
+          if (Test-Path 'verify-linux-proton/bogdoner.click-indicators.ios.dylib') { throw 'iOS binary was accidentally bundled.' }
+          if (Test-Path 'verify-linux-proton/bogdoner.click-indicators.dylib') { throw 'macOS binary was accidentally bundled.' }
+
+          $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path $dll))
+          if ($bytes.Length -lt 256) { throw 'DLL is unexpectedly small/corrupt.' }
+          $peOffset = [BitConverter]::ToInt32($bytes, 0x3C)
+          if ($peOffset -lt 0 -or ($peOffset + 26) -ge $bytes.Length) { throw 'Invalid PE header offset.' }
+          if ($bytes[$peOffset] -ne 0x50 -or $bytes[$peOffset + 1] -ne 0x45 -or $bytes[$peOffset + 2] -ne 0 -or $bytes[$peOffset + 3] -ne 0) { throw 'Invalid PE signature.' }
+          $machine = [BitConverter]::ToUInt16($bytes, $peOffset + 4)
+          $magic = [BitConverter]::ToUInt16($bytes, $peOffset + 24)
+          if ($machine -ne 0x8664) { throw ('Wrong PE machine: 0x{0:X4}; expected AMD64 0x8664.' -f $machine) }
+          if ($magic -ne 0x20B) { throw ('Wrong PE optional-header magic: 0x{0:X}; expected PE32+ 0x20B.' -f $magic) }
+
+          $meta = Get-Content 'verify-linux-proton/mod.json' -Raw | ConvertFrom-Json
+          if ($meta.id -ne 'bogdoner.click-indicators') { throw 'Wrong mod ID.' }
+          if ($meta.version -ne $expectedVersion) { throw "Wrong mod version: $($meta.version), expected $expectedVersion" }
+          if ($meta.geode -ne '5.10.1') { throw 'Wrong Geode version.' }
+          if ($meta.gd.win -ne '2.2081') { throw 'Wrong Geometry Dash Windows version for Proton.' }
+
+          Copy-Item $geode.FullName 'bogdoner.click-indicators.geode' -Force
+          $hash = (Get-FileHash 'bogdoner.click-indicators.geode' -Algorithm SHA256).Hash.ToLower()
+          $packageSize = (Get-Item 'bogdoner.click-indicators.geode').Length
+          "SHA256=$hash"
+          "Package size=$packageSize bytes"
+          "Validated for Linux/Steam Deck through Proton: PE32+ AMD64"
+
+      - name: Prepare release notes
+        shell: pwsh
+        run: |
+          $version = (Get-Content 'mod.json' -Raw | ConvertFrom-Json).version
+          @"
+          Click Indicators $version for Geometry Dash 2.2081 on Linux / Steam Deck through Proton.
+
+          - Geode SDK 5.10.1
+          - Release build with LTO
+          - Windows x86-64 PE32+ binary, as required by the Windows Geometry Dash build running under Proton
+          - Intended for Linux desktop and Steam Deck users running Geometry Dash through Proton
+          - This is not a native Linux .so build because Geode 5.10.1 does not provide a native Linux Geometry Dash target
+          - Includes the current feature set from main
+
+          Install this .geode file in the same Geode setup used by your Proton/Wine Geometry Dash prefix.
+          "@ | Set-Content -Path 'RELEASE_NOTES.md' -Encoding UTF8
+
+      - name: Publish or replace Linux Proton release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = (Get-Content 'mod.json' -Raw | ConvertFrom-Json).version
+          gh release view Linux-Proton --repo '${{ github.repository }}' *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload Linux-Proton 'bogdoner.click-indicators.geode' --repo '${{ github.repository }}' --clobber
+            if ($LASTEXITCODE -ne 0) { throw 'Failed to replace Linux Proton release asset.' }
+            gh release edit Linux-Proton --repo '${{ github.repository }}' --title "Linux / Steam Deck (Proton) $version" --notes-file 'RELEASE_NOTES.md'
+            if ($LASTEXITCODE -ne 0) { throw 'Failed to update Linux Proton release metadata.' }
+          }
+          else {
+            gh release create Linux-Proton 'bogdoner.click-indicators.geode' --repo '${{ github.repository }}' --title "Linux / Steam Deck (Proton) $version" --notes-file 'RELEASE_NOTES.md' --target main --latest=false
+            if ($LASTEXITCODE -ne 0) { throw 'Failed to create Linux Proton release.' }
+          }
+
+      - name: Verify published release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = (Get-Content 'mod.json' -Raw | ConvertFrom-Json).version
+          $json = gh release view Linux-Proton --repo '${{ github.repository }}' --json tagName,name,assets | ConvertFrom-Json
+          if ($json.tagName -ne 'Linux-Proton') { throw 'Published release has wrong tag.' }
+          if ($json.name -ne "Linux / Steam Deck (Proton) $version") { throw 'Published release has wrong name.' }
+          $assets = @($json.assets | Where-Object { $_.name -eq 'bogdoner.click-indicators.geode' })
+          if ($assets.Count -ne 1) { throw "Expected exactly one Linux Proton .geode asset; found $($assets.Count)." }
+          $localSize = (Get-Item 'bogdoner.click-indicators.geode').Length
+          if ([int64]$assets[0].size -ne [int64]$localSize) { throw 'Published asset size does not match verified local package.' }
+          "Published Linux/Proton $version asset verified: $localSize bytes"
