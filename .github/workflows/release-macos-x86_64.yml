@@ -1,0 +1,151 @@
+name: Publish macOS x86_64 Release
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/release-macos-x86_64.yml'
+      - 'mod.json'
+      - 'src/**'
+      - 'CMakeLists.txt'
+      - 'resources/**'
+      - 'logo.png'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release-macos-x86_64:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build Click Indicators for macOS x86_64
+        id: geode_build
+        uses: geode-sdk/build-geode-mod@main
+        with:
+          target: MacOS
+          sdk: given
+          build-config: Release
+          use-lto: true
+          configure-args: -DCMAKE_OSX_ARCHITECTURES=x86_64
+
+      - name: Verify macOS x86_64 package
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="${{ steps.geode_build.outputs.build-output }}"
+          GEODE="$(find "$OUT" -maxdepth 1 -name '*.geode' -print -quit)"
+          VERSION="$(jq -r '.version' mod.json)"
+
+          test -n "$GEODE"
+          test -f "$GEODE"
+          unzip -t "$GEODE"
+
+          rm -rf verify-macos-x86_64
+          mkdir verify-macos-x86_64
+          unzip -q "$GEODE" -d verify-macos-x86_64
+
+          DYLIB="verify-macos-x86_64/bogdoner.click-indicators.dylib"
+          test -f "$DYLIB"
+          test -f verify-macos-x86_64/mod.json
+          test ! -e verify-macos-x86_64/bogdoner.click-indicators.ios.dylib
+          test ! -e verify-macos-x86_64/bogdoner.click-indicators.android32.so
+          test ! -e verify-macos-x86_64/bogdoner.click-indicators.android64.so
+          test ! -e verify-macos-x86_64/bogdoner.click-indicators.dll
+
+          file "$DYLIB" | tee macos-x86_64-binary.txt
+          grep -Eq 'Mach-O 64-bit.*x86_64' macos-x86_64-binary.txt
+
+          ARCHS="$(lipo -archs "$DYLIB")"
+          echo "Architectures: $ARCHS" | tee macos-x86_64-archs.txt
+          test "$ARCHS" = "x86_64"
+
+          jq -e --arg version "$VERSION" '
+            .id == "bogdoner.click-indicators" and
+            .version == $version and
+            .geode == "5.10.1" and
+            .gd.mac == "2.2081"
+          ' verify-macos-x86_64/mod.json >/dev/null
+
+          cp "$GEODE" bogdoner.click-indicators.geode
+          shasum -a 256 bogdoner.click-indicators.geode | tee macos-x86_64-sha256.txt
+
+          echo "=== VERIFIED MACOS X86_64 PACKAGE ==="
+          jq '{id, version, geode, gd}' verify-macos-x86_64/mod.json
+          ls -lh bogdoner.click-indicators.geode "$DYLIB"
+          cat macos-x86_64-binary.txt
+          cat macos-x86_64-archs.txt
+          cat macos-x86_64-sha256.txt
+
+      - name: Prepare release notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(jq -r '.version' mod.json)"
+          cat > RELEASE_NOTES.md <<EOF
+          Click Indicators ${VERSION} for Geometry Dash 2.2081 on Intel macOS.
+
+          - Geode SDK 5.10.1
+          - Release build with LTO
+          - Native macOS Mach-O x86_64 binary
+          - Intended for Intel Macs
+          - Includes the current feature set from main
+
+          Install this .geode file through Geode on an Intel Mac and restart Geometry Dash if requested.
+          EOF
+
+      - name: Publish or replace macOS x86_64 release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(jq -r '.version' mod.json)"
+          TAG="MacOS-x86_64"
+          TITLE="macOS x86_64 ${VERSION} - Geode 5.10.1"
+
+          if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release upload "$TAG" bogdoner.click-indicators.geode \
+              --repo "${{ github.repository }}" --clobber
+            gh release edit "$TAG" \
+              --repo "${{ github.repository }}" \
+              --title "$TITLE" \
+              --notes-file RELEASE_NOTES.md
+          else
+            gh release create "$TAG" bogdoner.click-indicators.geode \
+              --repo "${{ github.repository }}" \
+              --title "$TITLE" \
+              --notes-file RELEASE_NOTES.md \
+              --target main --latest=false
+          fi
+
+      - name: Verify published release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(jq -r '.version' mod.json)"
+          TAG="MacOS-x86_64"
+          TITLE="macOS x86_64 ${VERSION} - Geode 5.10.1"
+
+          gh release view "$TAG" --repo "${{ github.repository }}" --json tagName,name,assets \
+            | tee published-macos-x86_64.json
+
+          jq -e --arg tag "$TAG" --arg name "$TITLE" '
+            .tagName == $tag and
+            .name == $name and
+            ([.assets[] | select(.name == "bogdoner.click-indicators.geode")] | length) == 1
+          ' published-macos-x86_64.json >/dev/null
+
+          LOCAL_SIZE="$(stat -f%z bogdoner.click-indicators.geode)"
+          REMOTE_SIZE="$(jq -r '.assets[] | select(.name == "bogdoner.click-indicators.geode") | .size' published-macos-x86_64.json)"
+          test "$LOCAL_SIZE" = "$REMOTE_SIZE"
+          echo "Published macOS x86_64 ${VERSION} asset verified: $REMOTE_SIZE bytes"
