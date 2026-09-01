@@ -188,10 +188,12 @@ The speed timeline is built once at load and never rebuilt while you play. When 
 
 ## Support development ❤️
 
-If this fork is useful to you and you want to support continued work on the fork, you can sponsor the project through **GitHub Sponsors**.
+If this fork is useful to you and you want to support continued work on the fork, you can use either **GitHub Sponsors** or **Ko-fi**.
 
 [❤️ Sponsor on GitHub](https://github.com/sponsors/Fernan20881208)
 
-Supporting is completely optional. The mod and its public releases stay available whether you sponsor or not.
+[☕ Support on Ko-fi](https://ko-fi.com/zaidnavarrosaucedo)
 
-Please remember that sponsorship of this fork does not transfer ownership or authorship of the original Click Indicators project; original credit remains with **Bogdoner**.
+Supporting is completely optional. The mod and its public releases stay available whether you support the project or not.
+
+Please remember that financial support for this fork does not transfer ownership or authorship of the original Click Indicators project; original credit remains with **Bogdoner**.
